@@ -7,15 +7,20 @@ StoreForward::StoreForward() {
   _count = 0;
   _recent_next = 0;
   memset(_recent_hashes, 0, sizeof(_recent_hashes));
-  _last_advert_blob_len = 0;
-  _has_last_advert = false;
+  _advert_head = 0;
+  _advert_count = 0;
+  _total_adverts_queued = _total_adverts_replayed = _total_adverts_evicted = _total_adverts_expired = 0;
   _enabled = false;
-  _total_queued = _total_replayed = _total_evicted = 0;
+  _msg_ttl_ms = SF_MSG_TTL_MS;
+  _advert_ttl_ms = SF_ADVERT_TTL_MS;
+  _total_queued = _total_replayed = _total_evicted = _total_expired = 0;
   memset(_companions, 0, sizeof(_companions));
 }
 
 void StoreForward::structure() {
   def("en", _enabled);
+  def("msg_ttl", _msg_ttl_ms);
+  def("adv_ttl", _advert_ttl_ms);
   def("num", _num_companions);
   for (int i = 0; i < SF_MAX_COMPANIONS; i++) {
     char key[8];
@@ -41,6 +46,8 @@ void StoreForward::load(FILESYSTEM* fs) {
       if (_companions[i].keyid_len > SF_KEYID_MAX_LEN) _companions[i].keyid_len = 0;
     }
     if (_num_companions > SF_MAX_COMPANIONS) _num_companions = SF_MAX_COMPANIONS;
+    if (_msg_ttl_ms / 1000 < SF_MIN_TTL_SECS || _msg_ttl_ms / 1000 > SF_MAX_TTL_SECS) _msg_ttl_ms = SF_MSG_TTL_MS;
+    if (_advert_ttl_ms / 1000 < SF_MIN_TTL_SECS || _advert_ttl_ms / 1000 > SF_MAX_TTL_SECS) _advert_ttl_ms = SF_ADVERT_TTL_MS;
   }
 }
 
@@ -62,6 +69,20 @@ void StoreForward::save(FILESYSTEM* fs) {
 void StoreForward::setEnabled(bool en, FILESYSTEM* fs) {
   _enabled = en;
   save(fs);
+}
+
+bool StoreForward::setMsgTtlSecs(uint32_t secs, FILESYSTEM* fs) {
+  if (secs < SF_MIN_TTL_SECS || secs > SF_MAX_TTL_SECS) return false;
+  _msg_ttl_ms = secs * 1000UL;
+  save(fs);
+  return true;
+}
+
+bool StoreForward::setAdvertTtlSecs(uint32_t secs, FILESYSTEM* fs) {
+  if (secs < SF_MIN_TTL_SECS || secs > SF_MAX_TTL_SECS) return false;
+  _advert_ttl_ms = secs * 1000UL;
+  save(fs);
+  return true;
 }
 
 bool StoreForward::setCompanionKeyIds(const char* csv_hex, FILESYSTEM* fs) {
@@ -122,11 +143,45 @@ void StoreForward::rememberHash(const uint8_t* hash) {
   _recent_next = (_recent_next + 1) % SF_RECENT_HASH_WINDOW;
 }
 
+void StoreForward::pruneExpiredMessages() {
+  // _queue is strictly FIFO-ordered by insertion (no in-place refresh happens
+  // here), so the oldest entry is always at _head - prune from the front.
+  while (_count > 0 && isExpired(_queue[_head].queued_at, _msg_ttl_ms)) {
+    _head = (_head + 1) % SF_MAX_QUEUE;
+    _count--;
+    _total_expired++;
+  }
+}
+
+void StoreForward::pruneExpiredAdverts() {
+  // Entries refreshed in place (same identity re-advertising) don't move
+  // position, so unlike the message queue this isn't strictly time-ordered -
+  // do a full compaction pass instead, reusing the same safe read/write
+  // pointer technique as onCompanionAdvert()'s message compaction.
+  uint16_t write_count = 0;
+  for (uint16_t n = 0; n < _advert_count; n++) {
+    uint16_t src_i = (_advert_head + n) % SF_MAX_ADVERTS;
+    SFAdvertEntry& e = _adverts[src_i];
+    if (isExpired(e.queued_at, _advert_ttl_ms)) {
+      _total_adverts_expired++;
+    } else {
+      uint16_t dst_i = (_advert_head + write_count) % SF_MAX_ADVERTS;
+      if (dst_i != src_i) {
+        _adverts[dst_i] = e;
+      }
+      write_count++;
+    }
+  }
+  _advert_count = write_count;
+}
+
 void StoreForward::enqueue(const mesh::Packet* pkt, uint8_t payload_type, uint8_t dest_hash) {
   uint8_t hash[MAX_HASH_SIZE];
   pkt->calculatePacketHash(hash);
   if (isRecentDup(hash)) return;
   rememberHash(hash);
+
+  pruneExpiredMessages();
 
   if (_count == SF_MAX_QUEUE) {
     // evict oldest to make room
@@ -169,6 +224,14 @@ void StoreForward::maybeQueue(const mesh::Packet* pkt) {
   }
 }
 
+int StoreForward::findAdvertSlot(const uint8_t* pubkey) const {
+  for (uint16_t n = 0; n < _advert_count; n++) {
+    uint16_t i = (_advert_head + n) % SF_MAX_ADVERTS;
+    if (memcmp(_adverts[i].pubkey, pubkey, PUB_KEY_SIZE) == 0) return i;
+  }
+  return -1;
+}
+
 void StoreForward::maybeStoreAdvert(const mesh::Packet* pkt, const mesh::Identity& id) {
   if (!_enabled) return;
 
@@ -176,8 +239,30 @@ void StoreForward::maybeStoreAdvert(const mesh::Packet* pkt, const mesh::Identit
     if (id.isHashMatch(_companions[i].keyid, _companions[i].keyid_len)) return;   // it's a companion, don't store
   }
 
-  _last_advert_blob_len = pkt->writeTo(_last_advert_blob);
-  _has_last_advert = true;
+  pruneExpiredAdverts();
+
+  int existing = findAdvertSlot(id.pub_key);
+  if (existing >= 0) {
+    // already have this identity cached - just refresh it in place
+    SFAdvertEntry& e = _adverts[existing];
+    e.blob_len = pkt->writeTo(e.blob);
+    e.queued_at = millis();
+    return;
+  }
+
+  if (_advert_count == SF_MAX_ADVERTS) {
+    // evict oldest identity to make room
+    _advert_head = (_advert_head + 1) % SF_MAX_ADVERTS;
+    _advert_count--;
+    _total_adverts_evicted++;
+  }
+  uint16_t tail = (_advert_head + _advert_count) % SF_MAX_ADVERTS;
+  SFAdvertEntry& e = _adverts[tail];
+  e.blob_len = pkt->writeTo(e.blob);
+  memcpy(e.pubkey, id.pub_key, PUB_KEY_SIZE);
+  e.queued_at = millis();
+  _advert_count++;
+  _total_adverts_queued++;
 }
 
 void StoreForward::onCompanionAdvert(const mesh::Identity& id, mesh::Dispatcher* dispatcher) {
@@ -195,18 +280,25 @@ void StoreForward::onCompanionAdvert(const mesh::Identity& id, mesh::Dispatcher*
   }
   if (!matched || !_enabled) return;
 
-  if (_has_last_advert) {
+  for (uint16_t n = 0; n < _advert_count; n++) {
+    uint16_t i = (_advert_head + n) % SF_MAX_ADVERTS;
+    SFAdvertEntry& e = _adverts[i];
+    if (isExpired(e.queued_at, _advert_ttl_ms)) {
+      _total_adverts_expired++;
+      continue;   // stale - drop it rather than replay
+    }
     mesh::Packet* p = dispatcher->obtainNewPacket();
     if (p != NULL) {
-      if (p->readFrom(_last_advert_blob, _last_advert_blob_len)) {
+      if (p->readFrom(e.blob, e.blob_len)) {
         dispatcher->sendPacket(p, 3, 0);   // pri=3, matches Mesh::sendFlood's de-prioritisation of ADVERT
-        _total_replayed++;
+        _total_adverts_replayed++;
       } else {
         dispatcher->releasePacket(p);
       }
     }
-    _has_last_advert = false;
   }
+  _advert_head = 0;
+  _advert_count = 0;
 
   if (_count == 0) return;
 
@@ -218,9 +310,12 @@ void StoreForward::onCompanionAdvert(const mesh::Identity& id, mesh::Dispatcher*
   for (uint16_t n = 0; n < _count; n++) {
     uint16_t src_i = (_head + n) % SF_MAX_QUEUE;
     SFEntry& e = _queue[src_i];
-    bool is_match = (e.payload_type == PAYLOAD_TYPE_GRP_TXT) ||
-                    (e.payload_type == PAYLOAD_TYPE_TXT_MSG && e.dest_hash == hash_byte);
-    if (is_match) {
+    bool is_expired = isExpired(e.queued_at, _msg_ttl_ms);
+    bool is_match = !is_expired && ((e.payload_type == PAYLOAD_TYPE_GRP_TXT) ||
+                    (e.payload_type == PAYLOAD_TYPE_TXT_MSG && e.dest_hash == hash_byte));
+    if (is_expired) {
+      _total_expired++;   // stale - drop it, don't keep or replay
+    } else if (is_match) {
       mesh::Packet* p = dispatcher->obtainNewPacket();
       if (p != NULL) {
         if (p->readFrom(e.blob, e.blob_len)) {
@@ -244,7 +339,8 @@ void StoreForward::onCompanionAdvert(const mesh::Identity& id, mesh::Dispatcher*
 void StoreForward::resetQueue() {
   _head = 0;
   _count = 0;
-  _has_last_advert = false;
+  _advert_head = 0;
+  _advert_count = 0;
 }
 
 void StoreForward::formatStatsReply(char* reply) const {
@@ -252,8 +348,9 @@ void StoreForward::formatStatsReply(char* reply) const {
   for (int i = 0; i < _num_companions; i++) {
     if (_companions[i].known) known++;
   }
-  sprintf(reply, "en=%d, companions=%d (known=%d), queue=%d/%d, last_advert=%d, queued=%u, replayed=%u, evicted=%u",
-          (int)_enabled, (int)_num_companions, (int)known, (int)_count, (int)SF_MAX_QUEUE,
-          (int)_has_last_advert,
-          (unsigned)_total_queued, (unsigned)_total_replayed, (unsigned)_total_evicted);
+  sprintf(reply, "en=%d comp=%d/%d(k=%d) q=%d/%d adv=%d/%d qd=%u rp=%u ev=%u xp=%u aqd=%u arp=%u aev=%u axp=%u",
+          (int)_enabled, (int)_num_companions, (int)SF_MAX_COMPANIONS, (int)known,
+          (int)_count, (int)SF_MAX_QUEUE, (int)_advert_count, (int)SF_MAX_ADVERTS,
+          (unsigned)_total_queued, (unsigned)_total_replayed, (unsigned)_total_evicted, (unsigned)_total_expired,
+          (unsigned)_total_adverts_queued, (unsigned)_total_adverts_replayed, (unsigned)_total_adverts_evicted, (unsigned)_total_adverts_expired);
 }

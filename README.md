@@ -87,9 +87,10 @@ This fork's `simple_repeater` firmware (`v1.17.1-1-sf`) adds an optional store-a
 - You configure the repeater with a list of "companion" pubkey prefixes (2+ bytes each). A companion must be *learned* — i.e. the repeater must hear at least one advert from it — before its direct messages can be recognized and queued, since the wire protocol only carries a 1-byte destination hash on direct messages; the full pubkey is only visible in adverts.
 - Direct messages (`TXT_MSG`) addressed to a known companion are queued as a safety-net copy, regardless of whether normal flood/direct forwarding also succeeds. Messages sent *by* a companion are never queued (it's clearly online if it just transmitted).
 - Channel messages (`GRP_TXT`) have no per-node destination, so all of them are queued unconditionally and replayed in full whenever any allow-listed companion's advert is seen.
-- The most recent advert from a *non*-companion node is also held in a single slot and replayed alongside messages when a companion reappears.
-- The message queue is a fixed-size ring buffer (`SF_MAX_QUEUE`, default 500 entries on this build) — once full, the oldest entry is silently dropped to make room for new ones.
-- Everything is RAM-only except the `enabled` flag and companion list, which persist across reboots.
+- Adverts from *non*-companion nodes are also cached — one entry per unique identity (deduped by pubkey, refreshed in place on repeat sightings) — and all of them are replayed alongside messages when a companion reappears.
+- The message queue (`SF_MAX_QUEUE`, default 500 entries) and the advert cache (`SF_MAX_ADVERTS`, default 64 entries) are each a fixed-size ring buffer — once full, the oldest entry is silently dropped to make room for new ones.
+- Every queued item has a time-to-live; entries older than the TTL are dropped rather than replayed (checked opportunistically on new arrivals and again at replay time). Defaults: 24h for messages, 1h for adverts — both adjustable at runtime.
+- Everything is RAM-only except the `enabled` flag, companion list, and TTLs, which persist across reboots.
 
 **New CLI commands** (repeater firmware, same console as other admin commands):
 
@@ -98,8 +99,11 @@ This fork's `simple_repeater` firmware (`v1.17.1-1-sf`) adds an optional store-a
 | `storeforward enable` / `storeforward disable` | Turns the feature on/off (persisted) |
 | `storeforward keyids <hex1,hex2,...>` | Sets the companion allow-list — comma-separated pubkey prefixes, 2–8 bytes each |
 | `storeforward keyids get` | Reads back the configured companion list (`*` marks a companion already seen/learned) |
-| `storeforward stats` | Shows enabled state, companion count, queue size/capacity, and lifetime queued/replayed/evicted counts |
-| `storeforward reset` | Clears the in-memory queue immediately (companion list and enabled flag untouched) |
+| `storeforward ttl msg <seconds>` | Sets the message TTL (10s – ~46 days), persisted |
+| `storeforward ttl advert <seconds>` | Sets the advert-cache TTL (10s – ~46 days), persisted |
+| `storeforward ttl get` | Reads back both TTLs, in seconds |
+| `storeforward stats` | Shows enabled state, companion count, message/advert queue size and capacity, and lifetime queued/replayed/evicted/expired counts |
+| `storeforward reset` | Clears the in-memory message queue and advert cache immediately (companion list, TTLs, and enabled flag untouched) |
 
 This is a repeater-only addition — it doesn't touch `companion_radio`, `simple_room_server`, or `simple_sensor`.
 

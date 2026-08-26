@@ -1286,6 +1286,20 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     strcpy(reply, "OK - queue cleared");
   } else if (strcmp(command, "storeforward stats") == 0) {
     store_fwd.formatStatsReply(reply);
+  } else if (strcmp(command, "storeforward ttl get") == 0) {
+    sprintf(reply, "msg_ttl=%u advert_ttl=%u (secs)", (unsigned)store_fwd.getMsgTtlSecs(), (unsigned)store_fwd.getAdvertTtlSecs());
+  } else if (memcmp(command, "storeforward ttl msg ", 21) == 0) {   // format: storeforward ttl msg {seconds}
+    if (store_fwd.setMsgTtlSecs((uint32_t)atol(&command[21]), _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - out of range");
+    }
+  } else if (memcmp(command, "storeforward ttl advert ", 24) == 0) {   // format: storeforward ttl advert {seconds}
+    if (store_fwd.setAdvertTtlSecs((uint32_t)atol(&command[24]), _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - out of range");
+    }
   } else if (strcmp(command, "storeforward keyids get") == 0) {
     store_fwd.formatKeyIdsReply(reply);
   } else if (memcmp(command, "storeforward keyids ", 20) == 0) {   // format: storeforward keyids {hex1,hex2,...}
