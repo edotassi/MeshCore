@@ -565,6 +565,7 @@ mesh::DispatcherAction MyMesh::onRecvPacket(mesh::Packet* pkt) {
   } else {
     recv_pkt_region = NULL;
   }
+  store_fwd.maybeQueue(pkt);
   return Mesh::onRecvPacket(pkt);
 }
 
@@ -658,6 +659,9 @@ void MyMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, uint32
       putNeighbour(id, timestamp, packet->getSNR());
     }
   }
+
+  store_fwd.maybeStoreAdvert(packet, id);
+  store_fwd.onCompanionAdvert(id, this);
 }
 
 void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, const uint8_t *secret,
@@ -946,6 +950,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
   // load persisted prefs
   _cli.loadPrefs(_fs);
   acl.load(_fs, self_id);
+  store_fwd.load(_fs);
   // TODO: key_store.begin();
   region_map.load(_fs);
 
@@ -1270,6 +1275,25 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       Serial.printf("\n");
     }
     reply[0] = 0;
+  } else if (strcmp(command, "storeforward enable") == 0) {
+    store_fwd.setEnabled(true, _fs);
+    strcpy(reply, "OK");
+  } else if (strcmp(command, "storeforward disable") == 0) {
+    store_fwd.setEnabled(false, _fs);
+    strcpy(reply, "OK");
+  } else if (strcmp(command, "storeforward reset") == 0) {
+    store_fwd.resetQueue();
+    strcpy(reply, "OK - queue cleared");
+  } else if (strcmp(command, "storeforward stats") == 0) {
+    store_fwd.formatStatsReply(reply);
+  } else if (strcmp(command, "storeforward keyids get") == 0) {
+    store_fwd.formatKeyIdsReply(reply);
+  } else if (memcmp(command, "storeforward keyids ", 20) == 0) {   // format: storeforward keyids {hex1,hex2,...}
+    if (store_fwd.setCompanionKeyIds(&command[20], _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - bad keyid");
+    }
   } else if (memcmp(command, "discover.neighbors", 18) == 0) {
     const char* sub = command + 18;
     while (*sub == ' ') sub++;

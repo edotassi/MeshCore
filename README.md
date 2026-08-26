@@ -78,6 +78,31 @@ The repeater and room server firmware can be set up via USB in the web config to
 
 They can also be managed via LoRa in the mobile app by using the Remote Management feature.
 
+## 📨 Store & Forward (Repeater, custom addition)
+
+This fork's `simple_repeater` firmware (`v1.17.1-1-sf`) adds an optional store-and-forward feature for companion nodes that are frequently offline: the repeater holds direct messages and channel messages in a RAM queue and replays them once a configured companion's advert is heard again.
+
+**How it works**
+
+- You configure the repeater with a list of "companion" pubkey prefixes (2+ bytes each). A companion must be *learned* — i.e. the repeater must hear at least one advert from it — before its direct messages can be recognized and queued, since the wire protocol only carries a 1-byte destination hash on direct messages; the full pubkey is only visible in adverts.
+- Direct messages (`TXT_MSG`) addressed to a known companion are queued as a safety-net copy, regardless of whether normal flood/direct forwarding also succeeds. Messages sent *by* a companion are never queued (it's clearly online if it just transmitted).
+- Channel messages (`GRP_TXT`) have no per-node destination, so all of them are queued unconditionally and replayed in full whenever any allow-listed companion's advert is seen.
+- The most recent advert from a *non*-companion node is also held in a single slot and replayed alongside messages when a companion reappears.
+- The message queue is a fixed-size ring buffer (`SF_MAX_QUEUE`, default 500 entries on this build) — once full, the oldest entry is silently dropped to make room for new ones.
+- Everything is RAM-only except the `enabled` flag and companion list, which persist across reboots.
+
+**New CLI commands** (repeater firmware, same console as other admin commands):
+
+| Command | Effect |
+|---|---|
+| `storeforward enable` / `storeforward disable` | Turns the feature on/off (persisted) |
+| `storeforward keyids <hex1,hex2,...>` | Sets the companion allow-list — comma-separated pubkey prefixes, 2–8 bytes each |
+| `storeforward keyids get` | Reads back the configured companion list (`*` marks a companion already seen/learned) |
+| `storeforward stats` | Shows enabled state, companion count, queue size/capacity, and lifetime queued/replayed/evicted counts |
+| `storeforward reset` | Clears the in-memory queue immediately (companion list and enabled flag untouched) |
+
+This is a repeater-only addition — it doesn't touch `companion_radio`, `simple_room_server`, or `simple_sensor`.
+
 ## 🛠 Hardware Compatibility
 
 MeshCore is designed for devices listed in the [MeshCore Flasher](https://meshcore.io/flasher)
