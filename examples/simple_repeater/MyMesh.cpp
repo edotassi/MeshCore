@@ -443,7 +443,11 @@ void MyMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, ui
 }
 
 bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
-  if (_prefs.disable_fwd) return false;
+  bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  is_wormhole_packet = wormhole.wasInjectedByWormhole(packet);
+#endif
+  if (_prefs.disable_fwd && !is_wormhole_packet) return false;
   if (packet->isRouteFlood()
       && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
     return false;
@@ -495,6 +499,9 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #endif
     bridge.sendPacket(pkt);
   }
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.sendPacket(pkt);
 #endif
 
   if (_logging) {
@@ -896,6 +903,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #if defined(WITH_MQTT_BRIDGE)
       , bridge(&_prefs, _mgr, &rtc)
 #endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+      , wormhole(&_prefs, _mgr, &rtc)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -1005,6 +1015,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #endif
     bridge.begin();
   }
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.begin();
 #endif
 
   radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
@@ -1429,6 +1442,9 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
 void MyMesh::loop() {
 #ifdef WITH_BRIDGE
   bridge.loop();
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  wormhole.loop();
 #endif
 
   mesh::Mesh::loop();

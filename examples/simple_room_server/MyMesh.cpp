@@ -234,6 +234,9 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
     bridge.sendPacket(pkt);
   }
 #endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.sendPacket(pkt);
+#endif
 
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
@@ -316,7 +319,11 @@ uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
 }
 
 bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
-  if (_prefs.disable_fwd) return false;
+  bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  is_wormhole_packet = wormhole.wasInjectedByWormhole(packet);
+#endif
+  if (_prefs.disable_fwd && !is_wormhole_packet) return false;
   if (packet->isRouteFlood()
       && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
     return false;
@@ -654,6 +661,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #if defined(WITH_MQTT_BRIDGE)
       , bridge(&_prefs, _mgr, &rtc)
 #endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+      , wormhole(&_prefs, _mgr, &rtc)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -756,6 +766,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #endif
     bridge.begin();
   }
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.begin();
 #endif
 
   updateAdvertTimer();
@@ -1026,6 +1039,9 @@ void MyMesh::loop() {
   mesh::Mesh::loop();
 #if defined(WITH_BRIDGE)
   bridge.loop();
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  wormhole.loop();
 #endif
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {

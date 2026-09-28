@@ -1,377 +1,461 @@
-# MQTT Wormhole Bridge — Piano di design
+# MQTT Wormhole Bridge — Piano di implementazione
 
-> Stato: **design / non ancora implementato**. Questo documento raccoglie i requisiti e le
-> decisioni di design emerse finora, come base per la futura implementazione.
+> Stato: design, non ancora implementato.
 
 ## Obiettivo
 
-Ogni volta che il modulo LoRa riceve correttamente un pacchetto, inoltrarlo in modo
-trasparente via internet a un'unica istanza remota "gemella" dello stesso firmware, che lo
-ritrasmette sulla propria LoRa — come se le due mesh network fossero collegate tramite un
-"wormhole".
+Ogni volta che il modulo LoRa riceve correttamente un pacchetto, inoltrarlo via internet a
+un'unica istanza remota "gemella" dello stesso firmware, che lo ritrasmette sulla propria
+LoRa. Collegamento privato, punto-punto, tra esattamente due istanze specifiche (non un
+bridge broadcast/multi-nodo come `ESPNowBridge`).
 
-**Non** è un bridge broadcast/multi-nodo come `ESPNowBridge`: è un collegamento privato,
-punto-punto, tra esattamente due istanze specifiche.
+## Contesto
 
-## Contesto del deployment
+- Collega due punti a ~1200 km di distanza (Nord Italia e Sud Italia).
+- Topologia fissa e permanente a 2 nodi: nessun incremento futuro previsto.
+- Entrambi i dispositivi in Italia (stessa banda LoRa / stessa regolamentazione EU868).
 
-Questa funzionalità nasce per collegare due punti a circa **1200 km di distanza** (Nord
-Italia e Sud Italia), scarsamente raggiungibili tra loro dalla rete MeshCore esistente. La
-topologia è **fissa e permanente a 2 nodi**: non è previsto alcun incremento futuro del
-numero di dispositivi o bridge collegati. Questo vincolo è confermato ed è rilevante per
-diverse decisioni di design più avanti nel documento — in particolare esclude la necessità
-di anti-loop/deduplica, che servirebbe solo con una topologia a più di 2 nodi.
+## Architettura
 
-Entrambi i dispositivi operano in Italia, quindi sotto la stessa giurisdizione regolatoria
-per la banda LoRa (ETSI EN 300 220, stessi limiti di duty cycle EU868) — nessuna
-incompatibilità normativa tra i due lati del collegamento.
-
-Concettualmente, questo caso d'uso è lo stesso di soluzioni consolidate in radioamatore per
-collegare via internet due ripetitori RF troppo lontani per parlarsi direttamente (es.
-EchoLink, IRLP, AllStarLink) o degli igate APRS-IS: un "hop" opportunistico via internet che
-supplisce alla propagazione radio reale, non un sostituto di una copertura RF continua.
-
-## Fattibilità
-
-Il codebase fornisce già l'astrazione giusta per questa funzionalità:
-
-- [`AbstractBridge`](../src/helpers/AbstractBridge.h) definisce il contratto implementato da
-  ogni bridge:
-  - `sendPacket(packet)` — chiamato dal core della mesh ogni volta che un pacchetto viene
-    trasmesso/osservato localmente.
-  - `onPacketReceived(packet)` — chiamato dal bridge per re-iniettare nella coda locale della
-    mesh un pacchetto arrivato dal suo medium esterno.
-- [`BridgeBase`](../src/helpers/bridges/BridgeBase.h) implementa la logica condivisa:
-  checksum Fletcher-16, deduplica tramite `SimpleMeshTables`, timestamp dei log.
-- Due bridge esistenti già inoltrano pacchetti bidirezionalmente su un trasporto:
-  [`ESPNowBridge`](../src/helpers/bridges/ESPNowBridge.h) (broadcast via ESP-NOW) e
-  `RS232Bridge` (punto-punto via seriale).
-- [`MQTTBridge`](../src/helpers/bridges/MQTTBridge.h) esiste già in questo fork come
-  **uplink di telemetria one-way**: pubblica JSON (con il pacchetto raw come stringa hex) su
-  un broker MQTT, ma `onPacketReceived()` è attualmente un no-op — nulla viene mai
-  re-iniettato nella mesh.
-
-Conclusione: questa funzionalità è un'estensione naturale di `MQTTBridge`, trasformandolo da
-uplink di telemetria one-way a relay bidirezionale punto-punto per un **peer specifico
-accoppiato**, riusando il formato payload JSON/hex e la dipendenza MQTT (`PubSubClient`) già
-presenti nel progetto.
+- [`AbstractBridge`](../src/helpers/AbstractBridge.h): contratto `sendPacket(packet)` /
+  `onPacketReceived(packet)` implementato da ogni bridge.
+- [`BridgeBase`](../src/helpers/bridges/BridgeBase.h): logica condivisa (checksum
+  Fletcher-16, `SimpleMeshTables`, timestamp).
+- [`MQTTBridge`](../src/helpers/bridges/MQTTBridge.h) (esistente, non modificato): uplink
+  observer one-way verso un broker MQTT pubblico, formato JSON + hex.
+- `MQTTWormholeBridge` (nuova classe, vedi Piano di implementazione): connessione MQTT
+  indipendente da `MQTTBridge`, verso il broker privato Coolify. Le due classi girano in
+  parallelo, connesse a broker diversi con credenziali diverse.
 
 ## Decisioni di design
 
 | Argomento | Decisione |
 |---|---|
-| Topologia | Punto-punto: esattamente 2 istanze accoppiate (non un hub multi-nodo) |
-| Raggiungibilità di rete | Entrambe le istanze sono presumibilmente dietro NAT (nessun port forwarding) → serve un broker che entrambe possano raggiungere in uscita; una connessione TCP/UDP diretta tra le due non è praticabile |
-| Trasporto | MQTT, estendendo l'`MQTTBridge` esistente invece di introdurre un nuovo trasporto/libreria |
-| Instradamento / isolamento | Una **coppia di topic dedicata al collegamento** (uno per pubblicare i pacchetti locali, uno per sottoscrivere quelli del peer) — *non* la convenzione pubblica observer `meshcore/{IATA}/{pubkey}/raw` usata oggi per la telemetria. È questo che lo rende un "wormhole": il bridge re-inietta solo i pacchetti che arrivano sul suo topic dedicato al peer, nient'altro pubblicato sul broker |
-| Formato payload | Riuso del formato JSON + hex già prodotto da `MQTTBridge::publishPacket()`. In ricezione, il campo `raw` (hex) viene decodificato e passato al `PacketManager` nello stesso modo di `ESPNowBridge::onDataRecv()` |
-| Anti-loop / deduplica | Non necessaria: la topologia è fissa e permanente a 2 nodi, quindi non può crearsi un loop. `SimpleMeshTables` resta disponibile in `BridgeBase` solo se in futuro la topologia dovesse mai cambiare |
-| Sicurezza / cifratura del trasporto | Nessuna cifratura applicativa per ora. Dato che il collegamento è permanente tra due dispositivi noti (non un test estemporaneo), è comunque consigliato attivare da subito username/password sul broker Mosquitto (vedi sezione deployment), invece della sola oscurità del nome del topic |
-| Configurazione | Via CLI esistente (`CommonCLI`), coerente con come sono già configurati `mqtt_server` / `mqtt_port` / `mqtt_username` / `mqtt_password` |
-| Broker | Mosquitto self-hosted, deployato come servizio Docker sull'istanza Coolify già disponibile dell'utente (server pubblico già presente, nessun costo aggiuntivo) |
-
-## Deployment del broker (Coolify)
-
-- Deployare l'immagine ufficiale `eclipse-mosquitto` come servizio custom su Coolify
-  (docker-compose), con volume persistente per config e password file.
-- **Esposizione**: MQTT è un protocollo TCP raw, non HTTP, quindi non passa attraverso il
-  reverse proxy automatico Traefik/HTTPS di Coolify come i servizi web. Due opzioni:
-  1. **Port mapping diretto** (consigliato per questo caso d'uso): pubblicare la 1883 (o
-     8883 per TLS) direttamente sull'IP pubblico del server tramite le impostazioni di
-     esposizione porte di Coolify. Più semplice, nessun lavoro aggiuntivo sul protocollo.
-  2. **MQTT su WebSocket**: abilitare il listener `protocol websockets` di Mosquitto in modo
-     che il traffico passi dal normale proxy HTTP(S) di Coolify ottenendo TLS automatico via
-     Let's Encrypt su un sottodominio. Più lavoro di setup, evita di aprire una porta non
-     standard.
-- **Consigliato anche se per la logica di relay è stata scelta "nessuna sicurezza"**:
-  abilitare autenticazione username/password su Mosquitto (`mosquitto_passwd`). Non costa
-  nulla in più da implementare dato che `MQTTBridge` supporta già `mqtt_username` /
-  `mqtt_password`, ed evita di lasciare un broker esposto su internet completamente aperto.
-
-## Monitoraggio/debug dei pacchetti MQTT
-
-Strumenti per osservare il traffico sul broker durante lo sviluppo e la diagnostica:
-
-- **`mosquitto_sub` da riga di comando** (pacchetto `mosquitto-clients`, `brew install
-  mosquitto` su Mac): il modo più rapido.
-  ```bash
-  mosquitto_sub -h <tuo-server> -p 1883 -u <user> -P <pass> -t '#' -v
-  ```
-  `-t '#'` sottoscrive tutti i topic (utile in debug generale; una volta definiti i topic
-  del wormhole si può restringere, es. `-t 'meshcore/wormhole/#'`), `-v` stampa
-  `topic payload` per ogni messaggio.
-- **MQTT Explorer** (GUI gratuita, Mac/Win/Linux, [mqtt-explorer.com](https://mqtt-explorer.com)):
-  mostra un albero dei topic con valori live, JSON già formattato, storico messaggi per
-  topic, e permette di pubblicare messaggi di test manualmente — utile per simulare un
-  pacchetto del peer senza dover accendere il secondo dispositivo fisico.
-- **Log del broker lato server**: impostare `log_type all` nel `mosquitto.conf` del
-  container e leggere i log dalla tab "Logs" di Coolify. Utile per diagnosticare a basso
-  livello connessioni/disconnessioni e fallimenti di autenticazione, senza dover aprire una
-  connessione client esterna.
-- **Se la porta non è esposta pubblicamente**: usare la funzione "Execute Command"/terminale
-  di Coolify per entrare nel container Mosquitto ed eseguire `mosquitto_sub -h localhost` in
-  locale.
-
-## Nota: identità e path dei pacchetti attraverso il wormhole
-
-Chi riceve dall'altra parte via LoRA **non nota nulla di anomalo**, ma con una precisazione
-importante su cosa significa "identico":
-
-- Il **payload** del pacchetto (`Packet::payload[]` in [Packet.h](../src/Packet.h)) — che
-  contiene MAC/firma, dati cifrati e, per gli ADVERT, la chiave pubblica dell'identità del
-  mittente — è completamente separato dall'header di routing (`header`, `path[]`) e non
-  viene mai toccato dal layer di forwarding della mesh. L'identità/firma del mittente
-  originale è quindi preservata al 100%, indipendentemente dal transport (LoRA, ESP-NOW,
-  seriale o MQTT wormhole).
-- Il bridge mette il pacchetto in coda tramite `BridgeBase::handleReceivedPacket` →
-  `_mgr->queueInbound(...)` ([BridgeBase.cpp:45](../src/helpers/bridges/BridgeBase.cpp#L45)),
-  esattamente come se fosse arrivato via LoRA: entra nella stessa pipeline di elaborazione
-  di un pacchetto ricevuto via radio.
-- L'header di routing **non** è ritrasmesso byte-per-byte identico, ed è corretto così:
-  come ogni altro nodo che inoltra un pacchetto, l'istanza che lo ritrasmette sulla propria
-  LoRA aggiunge il proprio hash al `path` per le route FLOOD
-  ([Mesh.cpp:348-349](../src/Mesh.cpp#L348-L349)), oppure consuma il proprio hop
-  rimuovendolo dal `path` per le route DIRECT
-  ([Mesh.cpp:335-340](../src/Mesh.cpp#L335-L340)) — esattamente come farebbe un ripetitore
-  fisico che ha ricevuto il pacchetto via radio.
-
-Il risultato è che il wormhole è trasparente nel senso corretto: chi riceve vede un
-pacchetto con l'identità/firma originale intatta, che sembra essere passato per un hop
-mesh legittimo attraverso il nodo remoto — non un'anomalia rilevabile, ma un normale hop
-multi-hop.
+| Topologia | Punto-punto, esattamente 2 istanze accoppiate |
+| Trasporto | MQTT, tramite nuova classe `MQTTWormholeBridge` con connessione WiFi/MQTT propria |
+| Broker | Mosquitto self-hosted su Coolify — `167.233.95.98:1883`, utente `meshcore` |
+| Relazione con l'observer MQTT | Connessioni indipendenti e simultanee: `MQTTBridge` (broker pubblico, invariato) e `MQTTWormholeBridge` (broker privato) |
+| Instradamento | Coppia di topic dedicata al collegamento (pub/sub incrociati tra i due nodi), non la convenzione observer `meshcore/{IATA}/{pubkey}/...` |
+| Formato payload | JSON + hex, stesso formato di `MQTTBridge::publishPacket()` |
+| Anti-loop / deduplica | Non implementata |
+| Cifratura applicativa | Nessuna; autenticazione solo a livello broker (username/password Mosquitto) |
+| Trigger | Solo su ricezione LoRa (`logRx()`), mai su trasmissione |
+| Accensione/spegnimento | `set wormhole.en on\|off`, toggle live senza riavvio |
+| Configurazione | CLI `wormhole.*`, namespace indipendente da `mqtt.*` |
+| Forwarding sul nodo ricevente | `allowPacketForward()` bypassa solo il controllo `disable_fwd` per i pacchetti iniettati dal wormhole (`wormhole.wasInjectedByWormhole()`); gli altri controlli (limite hop flood) restano invariati. Un room server resta room server (non ritrasmette il traffico locale) e fa da relay solo per il wormhole; su un repeater (default `disable_fwd=0`) il comportamento per tutto il resto del traffico non cambia |
 
 ## Piano di implementazione
 
-Checklist dettagliata, file per file, con riferimenti esatti al codice esistente da cui
-partire. Pensata per essere seguita direttamente in fase di sviluppo, in ordine.
+Checklist file per file, con riferimenti al codice esistente.
 
 ### 1. `src/helpers/CommonCLI.h` — nuovi campi prefs
 
-Nella sezione `// MQTT bridge settings (MQTT only)` (dopo `mqtt_interval`, riga ~69),
-aggiungere:
+Nuovo blocco indipendente dai campi `mqtt_*` esistenti:
 
 ```cpp
-uint8_t mqtt_wormhole_enabled = 0;      // boolean: abilita il relay bidirezionale
-char mqtt_wormhole_pub_topic[64];       // topic su cui pubblicare i pacchetti locali
-char mqtt_wormhole_sub_topic[64];       // topic del peer a cui iscriversi per l'injection
+// Wormhole bridge settings (independent MQTT connection, separate broker from mqtt_* above)
+uint8_t wormhole_enabled = 0;
+char wormhole_server[64];
+uint16_t wormhole_port = 1883;
+char wormhole_username[32];
+char wormhole_password[32];
+char wormhole_pub_topic[64];
+char wormhole_sub_topic[64];
 ```
 
-- [ ] Aggiungere i 3 campi dopo `mqtt_interval` in `NodePrefs`.
-- [ ] Registrarli nella nested class `MqttPrefs::structure()` (riga ~185-197), accanto agli
-      altri `def("...")` esistenti:
+- [ ] Aggiungere i 7 campi in `NodePrefs`.
+- [ ] Aggiungere una nested class `WormholePrefs` (stesso pattern di `MqttPrefs`, righe
+      ~182-202):
       ```cpp
-      def("wh_en", _parent->mqtt_wormhole_enabled);
-      def("wh_pub", _parent->mqtt_wormhole_pub_topic, sizeof(_parent->mqtt_wormhole_pub_topic));
-      def("wh_sub", _parent->mqtt_wormhole_sub_topic, sizeof(_parent->mqtt_wormhole_sub_topic));
+      class WormholePrefs : public ConfigSerializer {
+        NodePrefs* _parent;
+      protected:
+        void structure() override {
+          def("en", _parent->wormhole_enabled);
+          def("srv", _parent->wormhole_server, sizeof(_parent->wormhole_server));
+          def("port", _parent->wormhole_port);
+          def("user", _parent->wormhole_username, sizeof(_parent->wormhole_username));
+          def("pass", _parent->wormhole_password, sizeof(_parent->wormhole_password));
+          def("pub", _parent->wormhole_pub_topic, sizeof(_parent->wormhole_pub_topic));
+          def("sub", _parent->wormhole_sub_topic, sizeof(_parent->wormhole_sub_topic));
+        }
+      public:
+        WormholePrefs(NodePrefs* parent) : _parent(parent) { }
+      };
+      WormholePrefs wormhole;
       ```
-- [ ] Inizializzare le stringhe nel costruttore di `NodePrefs` (riga ~232-236, accanto a
-      `mqtt_iata[0] = 0;`):
+- [ ] Registrare `def("wormhole", wormhole);` nel `structure()` principale di `NodePrefs`
+      (riga ~220, accanto a `def("mqtt", mqtt);`).
+- [ ] Aggiungere `wormhole(this)` alla lista di inizializzazione del costruttore (riga ~224,
+      accanto a `mqtt(this)`).
+- [ ] Inizializzare le stringhe nel corpo del costruttore:
       ```cpp
-      mqtt_wormhole_pub_topic[0] = 0;
-      mqtt_wormhole_sub_topic[0] = 0;
+      wormhole_server[0] = 0;
+      wormhole_username[0] = 0;
+      wormhole_password[0] = 0;
+      wormhole_pub_topic[0] = 0;
+      wormhole_sub_topic[0] = 0;
       ```
 
-*Nota*: niente di nuovo per la connessione al broker — si riusano `mqtt_server` /
-`mqtt_port` / `mqtt_username` / `mqtt_password` già esistenti.
+### 2. `src/helpers/CommonCLI.cpp` — comandi CLI `set`/`get` sotto `wormhole.*`
 
-### 2. `src/helpers/CommonCLI.cpp` — comandi CLI `set`/`get`
+Nuovo blocco `#ifdef WITH_MQTT_WORMHOLE_BRIDGE` nei comandi `set` (accanto, non dentro, al
+blocco `#ifdef WITH_MQTT_BRIDGE` esistente), stesso pattern di `mqtt.server`/`mqtt.status`:
 
-Nel blocco `#ifdef WITH_MQTT_BRIDGE` dei comandi `set` (dopo `mqtt.interval`, riga ~799),
-seguendo esattamente il pattern di `mqtt.status`/`mqtt.server`:
-
-- [ ] `set mqtt.wh_en on|off`
+- [ ] `set wormhole.en on|off` — toggle live, non solo un flag persistito:
       ```cpp
-      } else if (memcmp(config, "mqtt.wh_en ", 11) == 0) {
-        _prefs->mqtt_wormhole_enabled = memcmp(&config[11], "on", 2) == 0;
+      } else if (memcmp(config, "wormhole.en ", 12) == 0) {
+        _prefs->wormhole_enabled = memcmp(&config[12], "on", 2) == 0;
         savePrefs();
+        _callbacks->setWormholeState(_prefs->wormhole_enabled);   // vedi punto 5
         strcpy(reply, "OK");
       ```
-- [ ] `set mqtt.wh_pub <topic>`
-      ```cpp
-      } else if (memcmp(config, "mqtt.wh_pub ", 12) == 0) {
-        StrHelper::strncpy(_prefs->mqtt_wormhole_pub_topic, &config[12], sizeof(_prefs->mqtt_wormhole_pub_topic));
-        savePrefs();
-        strcpy(reply, "OK");
-      ```
-- [ ] `set mqtt.wh_sub <topic>` (stesso pattern, su `mqtt_wormhole_sub_topic`).
+- [ ] `set wormhole.server <host>`
+- [ ] `set wormhole.port <port>` (validazione 1-65535, come `mqtt.port`)
+- [ ] `set wormhole.user <user>`
+- [ ] `set wormhole.pass <pass>`
+- [ ] `set wormhole.pub <topic>`
+- [ ] `set wormhole.sub <topic>`
 
-Nel blocco `get` (dopo `mqtt.interval`, riga ~1027):
+Stesso set, speculare, nel blocco `get` per ciascun campo (password mascherata come
+`********` se non vuota, come `mqtt.password`).
 
-- [ ] `get mqtt.wh_en` → `sprintf(reply, "> %s", _prefs->mqtt_wormhole_enabled ? "on" : "off");`
-- [ ] `get mqtt.wh_pub` → `sprintf(reply, "> %s", _prefs->mqtt_wormhole_pub_topic);`
-- [ ] `get mqtt.wh_sub` → `sprintf(reply, "> %s", _prefs->mqtt_wormhole_sub_topic);`
+### 3. `src/helpers/bridges/MQTTWormholeBridge.h` — nuova classe (file nuovo)
 
-### 3. `src/helpers/bridges/MQTTBridge.h` — nuovi membri
+```cpp
+#pragma once
+#include "helpers/bridges/BridgeBase.h"
+#ifdef WITH_MQTT_WORMHOLE_BRIDGE
+#include <WiFi.h>
+#include <PubSubClient.h>
 
-- [ ] Aggiungere un puntatore statico all'istanza (stesso pattern di
-      `ESPNowBridge::_instance`, [ESPNowBridge.h:44](../src/helpers/bridges/ESPNowBridge.h#L44)),
-      necessario perché `PubSubClient::setCallback()` accetta solo una funzione libera, non un
-      metodo di istanza:
-      ```cpp
-      static MQTTBridge* _instance;
-      static void mqttMessageCallback(char* topic, uint8_t* payload, unsigned int length);
-      ```
-- [ ] Aggiungere i metodi di gestione del messaggio in ingresso:
-      ```cpp
-      void onMqttMessage(const char* topic, const uint8_t* payload, unsigned int length);
-      bool injectPacketFromJson(const uint8_t* json, unsigned int length);
-      ```
-- [ ] Modificare la firma di `onPacketReceived()` (già dichiarata in `AbstractBridge`): non
-      cambia, ma il corpo non sarà più un no-op (vedi punto 4).
+class MQTTWormholeBridge : public BridgeBase {
+  WiFiClient _wifi_client;
+  PubSubClient _mqtt_client;
+  static MQTTWormholeBridge* _instance;
+  static void mqttMessageCallback(char* topic, uint8_t* payload, unsigned int length);
 
-### 4. `src/helpers/bridges/MQTTBridge.cpp` — implementazione
+  unsigned long _last_reconnect_attempt = 0;
 
-- [ ] Nel costruttore, aggiungere `_instance = this;` (come
+  // Tracking dei pacchetti iniettati, per forzarne l'inoltro indipendentemente da disable_fwd
+  static const int MAX_TRACKED_PACKETS = 4;  // ring buffer, i pacchetti restano allocati poco
+  const mesh::Packet* _injected_packets[MAX_TRACKED_PACKETS] = {};
+  int _injected_packets_idx = 0;
+  void trackInjectedPacket(const mesh::Packet* pkt);
+
+  void ensureWifi();
+  bool ensureMqtt();
+  void onMqttMessage(const char* topic, const uint8_t* payload, unsigned int length);
+  bool injectPacketFromJson(const uint8_t* json, unsigned int length);
+
+public:
+  MQTTWormholeBridge(NodePrefs* prefs, mesh::PacketManager* mgr, mesh::RTCClock* rtc);
+  void begin() override;
+  void end() override;
+  void loop() override;
+  void onPacketReceived(mesh::Packet* packet) override;  // -> handleReceivedPacket()
+  void sendPacket(mesh::Packet* packet) override;         // pubblica su wormhole_pub_topic
+  bool isMqttConnected() { return _mqtt_client.connected(); }
+
+  /** true se `packet` è stato iniettato da questo bridge (va forzato in allowPacketForward) */
+  bool wasInjectedByWormhole(const mesh::Packet* packet) const;
+};
+#endif
+```
+
+`ensureWifi()`/`ensureMqtt()` rispecchiano gli omonimi metodi di
+[`MQTTBridge`](../src/helpers/bridges/MQTTBridge.h), leggendo `_prefs->wormhole_*` invece di
+`_prefs->mqtt_*`.
+
+### 4. `src/helpers/bridges/MQTTWormholeBridge.cpp` — implementazione (file nuovo)
+
+- [ ] `ensureWifi()`: identico a
+      [MQTTBridge.cpp:38-51](../src/helpers/bridges/MQTTBridge.cpp#L38-L51).
+- [ ] `ensureMqtt()`: come [MQTTBridge.cpp:69-92](../src/helpers/bridges/MQTTBridge.cpp#L69-L92)
+      ma con `_prefs->wormhole_server`/`wormhole_port`/`wormhole_username`/`wormhole_password`.
+      Dopo una connessione riuscita, se `wormhole_sub_topic[0] != 0`:
+      `_mqtt_client.subscribe(_prefs->wormhole_sub_topic);` (le subscription vanno rifatte a
+      ogni riconnessione).
+- [ ] Costruttore: `_instance = this;` (pattern `ESPNowBridge::_instance`,
       [ESPNowBridge.cpp:26](../src/helpers/bridges/ESPNowBridge.cpp#L26)).
-- [ ] In `begin()`, registrare la callback una sola volta: `_mqtt_client.setCallback(mqttMessageCallback);`
-- [ ] In `ensureMqtt()`, subito dopo una connessione riuscita (dove oggi c'è solo
-      `_reconnect_count++`), se `_prefs->mqtt_wormhole_enabled` e
-      `_prefs->mqtt_wormhole_sub_topic[0] != 0`: `_mqtt_client.subscribe(_prefs->mqtt_wormhole_sub_topic);`
-      (le sottoscrizioni MQTT non sopravvivono a una riconnessione, va rifatta ogni volta).
-- [ ] Implementare `mqttMessageCallback()` come wrapper statico che chiama
-      `_instance->onMqttMessage(topic, payload, length)` (stesso pattern di
-      `ESPNowBridge::recv_cb`, [ESPNowBridge.cpp:12-16](../src/helpers/bridges/ESPNowBridge.cpp#L12-L16)).
-- [ ] Implementare `onMqttMessage()`:
-      - Guardia: se `!_prefs->mqtt_wormhole_enabled`, return.
-      - Chiama `injectPacketFromJson(payload, length)`.
-- [ ] Implementare `injectPacketFromJson()` — **senza introdurre una dipendenza JSON**
-      (il progetto non usa ArduinoJson, e qui serve solo estrarre un campo): cercare la
-      sottostringa `"raw":"` nel buffer, leggere i caratteri hex fino alla `"` di chiusura in
-      un buffer locale (`char hex[561]`, stessa dimensione usata in
-      `publishPacket()`/`raw_hex`), poi:
+- [ ] `begin()`: `_mqtt_client.setCallback(mqttMessageCallback);`, poi come
+      [MQTTBridge.cpp:163-167](../src/helpers/bridges/MQTTBridge.cpp#L163-L167).
+- [ ] `mqttMessageCallback()`: wrapper statico → `_instance->onMqttMessage(topic, payload,
+      length)` (pattern `ESPNowBridge::recv_cb`,
+      [ESPNowBridge.cpp:12-16](../src/helpers/bridges/ESPNowBridge.cpp#L12-L16)).
+- [ ] `onMqttMessage()` → chiama `injectPacketFromJson(payload, length)`.
+- [ ] `injectPacketFromJson()` — senza dipendenza JSON (il progetto non usa ArduinoJson):
+      cercare la sottostringa `"raw":"`, leggere gli hex fino alla `"` di chiusura in un
+      buffer locale (`char hex[561]`, stessa dimensione di `raw_hex` in
+      `MQTTBridge::publishPacket()`), poi:
       ```cpp
-      uint8_t decoded[280];  // stessa dimensione di raw_bytes in publishPacket()
+      uint8_t decoded[280];
       if (!mesh::Utils::fromHex(decoded, sizeof(decoded), hex)) return false;
 
       mesh::Packet* pkt = _mgr->allocNew();
       if (!pkt) return false;
 
-      if (pkt->readFrom(decoded, decoded_len)) {
-        onPacketReceived(pkt);   // -> handleReceivedPacket() -> _mgr->queueInbound(...)
+      if (pkt->readFrom(decoded, strlen(hex) / 2)) {
+        trackInjectedPacket(pkt);  // marca il pacchetto per il bypass di disable_fwd
+        onPacketReceived(pkt);     // -> handleReceivedPacket() -> _mgr->queueInbound(...)
         return true;
       }
       _mgr->free(pkt);
       return false;
       ```
-      (`mesh::Utils::fromHex` è già dichiarato in [Utils.h:67](../src/Utils.h#L67) e usato
-      altrove nel progetto; `decoded_len` si ricava da `strlen(hex) / 2`).
-- [ ] Sostituire il corpo (oggi no-op) di `onPacketReceived()`:
+      (`mesh::Utils::fromHex` dichiarato in [Utils.h:67](../src/Utils.h#L67)).
+- [ ] `onPacketReceived()`:
       ```cpp
-      void MQTTBridge::onPacketReceived(mesh::Packet* packet) {
+      void MQTTWormholeBridge::onPacketReceived(mesh::Packet* packet) {
         handleReceivedPacket(packet);   // da BridgeBase, come ESPNowBridge::onPacketReceived
       }
       ```
-- [ ] In `sendPacket()` (dove oggi pubblica su `"raw"`/`"packets"`), se
-      `_prefs->mqtt_wormhole_enabled` e `_prefs->mqtt_wormhole_pub_topic[0] != 0`, pubblicare lo
-      stesso payload JSON anche sul topic wormhole dedicato (riusando `publishPacket()` con
-      `topic_suffix` sostituito da `_prefs->mqtt_wormhole_pub_topic` — richiede una piccola
-      variante di `buildTopic()`/`publishPacket()` che accetti un topic assoluto invece di un
-      suffisso, dato che il topic wormhole non segue la convenzione
-      `meshcore/{IATA}/{pubkey}/...`).
+- [ ] `trackInjectedPacket()` / `wasInjectedByWormhole()` — ring buffer di puntatori, per
+      permettere a `MyMesh::allowPacketForward()` di riconoscere i pacchetti del wormhole
+      (vedi punto 5):
+      ```cpp
+      void MQTTWormholeBridge::trackInjectedPacket(const mesh::Packet* pkt) {
+        _injected_packets[_injected_packets_idx] = pkt;
+        _injected_packets_idx = (_injected_packets_idx + 1) % MAX_TRACKED_PACKETS;
+      }
 
-### 5. Wiring esistente — nessuna modifica richiesta
+      bool MQTTWormholeBridge::wasInjectedByWormhole(const mesh::Packet* packet) const {
+        for (int i = 0; i < MAX_TRACKED_PACKETS; i++) {
+          if (_injected_packets[i] == packet) return true;
+        }
+        return false;
+      }
+      ```
+- [ ] `sendPacket()`: come `MQTTBridge::publishPacket()`
+      ([MQTTBridge.cpp:128-161](../src/helpers/bridges/MQTTBridge.cpp#L128-L161)), stesso
+      formato JSON/hex, ma pubblica direttamente su `_prefs->wormhole_pub_topic` (topic
+      assoluto, non costruito con `buildTopic()`/convenzione `meshcore/{IATA}/...`).
 
-Il resto della catena funziona già senza toccare altro codice:
+### 5. Wiring in `MyMesh.h`/`MyMesh.cpp`
 
-- `MyMesh::logRx()` ([MyMesh.cpp:490-497](../examples/simple_repeater/MyMesh.cpp#L490-L497))
-  chiama già `bridge.sendPacket(pkt)` quando `bridge_pkt_src == 1` (cioè quando il pref
-  `bridge.source` è impostato su `rx`) — è già l'hook "ogni volta che il modulo LoRa riceve
-  correttamente un pacchetto" richiesto dall'obiettivo del progetto.
-- `bridge.begin()` / `bridge.setIdentity()` sono già chiamati in `MyMesh::begin()`
-  ([MyMesh.cpp:1001-1007](../examples/simple_repeater/MyMesh.cpp#L1001-L1007)), guardati da
-  `_prefs.bridge_enabled`.
-- `bridge.loop()` è già chiamato nel loop principale
-  ([MyMesh.cpp:1431](../examples/simple_repeater/MyMesh.cpp#L1431)).
-- Il flag di build `WITH_MQTT_BRIDGE` e il sorgente `MQTTBridge.cpp` sono già cablati in
-  [variants/heltec_v4/platformio.ini](../variants/heltec_v4/platformio.ini).
+- [ ] In `MyMesh.h`, accanto al membro `bridge` (riga ~121-122 di
+      [MyMesh.h](../examples/simple_repeater/MyMesh.h)), in un blocco `#if` separato (deve
+      coesistere con `WITH_MQTT_BRIDGE`):
+      ```cpp
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        MQTTWormholeBridge wormhole;
+      #endif
+      ```
+- [ ] Nel costruttore di `MyMesh` (accanto a `, bridge(&_prefs, _mgr, &rtc)`,
+      [MyMesh.cpp:896-898](../examples/simple_repeater/MyMesh.cpp#L896-L898)):
+      ```cpp
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+            , wormhole(&_prefs, _mgr, &rtc)
+      #endif
+      ```
+- [ ] In `MyMesh::begin()` (accanto a `if (_prefs.bridge_enabled) { bridge.begin(); }`,
+      [MyMesh.cpp:1001-1007](../examples/simple_repeater/MyMesh.cpp#L1001-L1007)):
+      ```cpp
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        if (_prefs.wormhole_enabled) wormhole.begin();
+      #endif
+      ```
+- [ ] Toggle live di `wormhole.en` (accensione/spegnimento a caldo, senza riavvio):
+      1. In [CommonCLI.h:276-278](../src/helpers/CommonCLI.h#L276-L278), accanto a
+         `virtual void setBridgeState(bool enable) { };`:
+         ```cpp
+         virtual void setWormholeState(bool enable) {
+           // no op by default
+         };
+         ```
+      2. In `MyMesh.h`, override dello stesso pattern di `setBridgeState()`
+         ([MyMesh.h:257-267](../examples/simple_repeater/MyMesh.h#L257-L267)):
+         ```cpp
+         #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+         void setWormholeState(bool enable) override {
+           if (enable == wormhole.isRunning()) return;
+           if (enable) wormhole.begin();
+           else wormhole.end();
+         }
+         #endif
+         ```
+- [ ] Nel loop principale (accanto a `bridge.loop();`,
+      [MyMesh.cpp:1431](../examples/simple_repeater/MyMesh.cpp#L1431)):
+      ```cpp
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        wormhole.loop();
+      #endif
+      ```
+- [ ] In `logRx()` **soltanto** (accanto a `bridge.sendPacket(pkt);` sotto `#ifdef
+      WITH_BRIDGE`, [MyMesh.cpp:490-497](../examples/simple_repeater/MyMesh.cpp#L490-L497)) —
+      **non** in `logTx()`, il wormhole inoltra solo ciò che riceve via radio:
+      ```cpp
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        if (_prefs.wormhole_enabled) wormhole.sendPacket(pkt);
+      #endif
+      ```
+- [ ] Includere il nuovo header in `MyMesh.h`:
+      ```cpp
+      #ifdef WITH_MQTT_WORMHOLE_BRIDGE
+      #include "helpers/bridges/MQTTWormholeBridge.h"
+      #endif
+      ```
+- [ ] In `variants/heltec_v4/platformio.ini`, aggiungere `WITH_MQTT_WORMHOLE_BRIDGE=1` e
+      `+<helpers/bridges/MQTTWormholeBridge.cpp>` agli environment dei due dispositivi
+      (può coesistere con `WITH_MQTT_BRIDGE=1` nello stesso environment).
+- [ ] **Forwarding mirato sul room server**: in `MyMesh::allowPacketForward()`
+      ([MyMesh.cpp:318-325](../examples/simple_room_server/MyMesh.cpp#L318-L325)), bypassare
+      **solo** il controllo `disable_fwd` per i pacchetti del wormhole — gli altri controlli
+      (es. limite hop flood) restano applicati normalmente anche a loro:
+      ```cpp
+      bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
+        bool is_wormhole_packet = false;
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        is_wormhole_packet = wormhole.wasInjectedByWormhole(packet);
+      #endif
+        if (_prefs.disable_fwd && !is_wormhole_packet) return false;
+        if (packet->isRouteFlood()
+            && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
+          return false;
+        }
+        return true;
+      }
+      ```
+      **Attenzione**: la `allowPacketForward()` di `simple_repeater`
+      ([MyMesh.cpp:445-470](../examples/simple_repeater/MyMesh.cpp#L445-L470)) è più estesa
+      di quella del room server — ha anche il controllo di regione sconosciuta per pacchetti
+      flood e il rilevamento loop. **Non copiare lo snippet del room server sopra** — va
+      applicata la stessa unica modifica (bypass di `disable_fwd`), lasciando invariato tutto
+      il resto:
+      ```cpp
+      bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
+        bool is_wormhole_packet = false;
+      #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+        is_wormhole_packet = wormhole.wasInjectedByWormhole(packet);
+      #endif
+        if (_prefs.disable_fwd && !is_wormhole_packet) return false;
+        if (packet->isRouteFlood()
+            && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
+          return false;
+        }
+        if (packet->isRouteFlood() && recv_pkt_region == NULL) {
+          MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
+          return false;
+        }
+        if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
+          const uint8_t* maximums;
+          if (_prefs.loop_detect == LOOP_DETECT_MINIMAL) {
+            maximums = max_loop_minimal;
+          } else if (_prefs.loop_detect == LOOP_DETECT_MODERATE) {
+            maximums = max_loop_moderate;
+          } else {
+            maximums = max_loop_strict;
+          }
+          if (isLooped(packet, maximums)) {
+            MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
+            return false;
+          }
+        }
+        return true;
+      }
+      ```
+      Su repeater, con `disable_fwd = 0` di default, `_prefs.disable_fwd && !is_wormhole_packet`
+      è sempre falsa: il comportamento per tutto il traffico non-wormhole resta identico a
+      oggi, byte per byte. Restano invece pienamente attivi, anche per i pacchetti del
+      wormhole, il limite hop flood, il controllo regione e il rilevamento loop — un pacchetto
+      del wormhole che li supera viene comunque scartato, esattamente come uno ricevuto via
+      LoRA.
+
+Stesse modifiche da applicare identiche in
+[examples/simple_room_server/MyMesh.cpp](../examples/simple_room_server/MyMesh.cpp)
+(`logRx()` alle righe 228-234, `begin()` a 754-757, `loop()` a 1028) — i due example non
+condividono codice tra loro.
 
 ### 6. Setup del broker
 
-- [ ] Deployare `eclipse-mosquitto` su Coolify (vedi sezione "Deployment del broker").
-- [ ] Esporre la porta 1883 (o 8883/TLS) direttamente sull'IP pubblico.
+- [ ] Deployare `eclipse-mosquitto:2` su Coolify (vedi "Deployment del broker").
+- [ ] Esporre la porta 1883 direttamente sull'IP pubblico.
 - [ ] Creare le credenziali con `mosquitto_passwd`.
 
 ### 7. Configurazione dei due dispositivi
 
-Su ogni istanza, via CLI seriale/BLE:
+**Su entrambi i dispositivi:**
 ```
-set mqtt.server <ip-broker>
-set mqtt.port 1883
-set mqtt.username <user>
-set mqtt.password <pass>
-set mqtt.wh_en on
-set bridge.source rx
-set bridge.en on
+set wormhole.server 167.233.95.98
+set wormhole.port 1883
+set wormhole.user meshcore
+set wormhole.pass meshcorewormhole
+set wormhole.en on
 ```
-Sul Nord Italia (A): `set mqtt.wh_pub topic/nord-to-sud` e `set mqtt.wh_sub topic/sud-to-nord`.
-Sul Sud Italia (B): topic invertiti — `set mqtt.wh_pub topic/sud-to-nord` e
-`set mqtt.wh_sub topic/nord-to-sud`.
+
+**Solo su Nord Italia (A):**
+```
+set wormhole.pub nord-to-sud
+set wormhole.sub sud-to-nord
+```
+
+**Solo su Sud Italia (B):**
+```
+set wormhole.pub sud-to-nord
+set wormhole.sub nord-to-sud
+```
+
+La configurazione `mqtt.*` dell'eventuale observer resta indipendente e non va toccata.
 
 ### 8. Test
 
-- [ ] Con `mosquitto_sub -v` (vedi sezione debug) verificare che A pubblichi sul topic
-      corretto quando riceve un pacchetto LoRA.
-- [ ] Verificare che B si sottoscriva al topic giusto e stampi in log (`BRIDGE_DEBUG_PRINTLN`)
-      la ricezione/decodifica del pacchetto.
-- [ ] Verificare che B ritrasmetta effettivamente sulla propria LoRA (con un secondo
-      dispositivo di test in ascolto vicino a B).
+- [ ] Con `mosquitto_sub -v` verificare che A pubblichi sul topic corretto alla ricezione di
+      un pacchetto LoRA.
+- [ ] Verificare che B si sottoscriva al topic giusto e decodifichi il pacchetto
+      (`BRIDGE_DEBUG_PRINTLN`).
+- [ ] Verificare che B ritrasmetta sulla propria LoRA (con un dispositivo di test in ascolto).
 - [ ] Ripetere nella direzione opposta (B → A).
-- [ ] Spegnere il broker a metà test e verificare il comportamento di graceful degradation
-      (nessun crash, riconnessione automatica al ripristino).
+- [ ] Spegnere il broker a metà test e verificare la graceful degradation (nessun crash,
+      riconnessione automatica al ripristino).
 
-## Rischi e controindicazioni
+## Deployment del broker (Coolify)
 
-Valutazione calata sul contesto reale del deployment (2 dispositivi fissi, Nord/Sud Italia,
-nessuna crescita prevista della topologia — vedi "Contesto del deployment").
+- Immagine `eclipse-mosquitto:2` come servizio Docker Compose custom, volumi persistenti per
+  config/data/log.
+- **Esposizione**: MQTT è TCP raw, non passa dal reverse proxy Traefik/HTTPS di Coolify.
+  Port mapping diretto (1883, o 8883/TLS) sull'IP pubblico del server.
+- Autenticazione username/password su Mosquitto (`mosquitto_passwd`), già supportata dai
+  prefs `wormhole_username`/`wormhole_password`.
 
-**Non più rilevanti in questo scenario**
-- *Loop/amplificazione da crescita della topologia*: risolto in radice dalla topologia fissa
-  a 2 nodi confermata dall'utente — non serve deduplica/anti-loop.
-- *Incompatibilità normativa tra i due lati*: entrambi i dispositivi sono in Italia, stessa
-  banda e stessi limiti di duty cycle (EU868, ETSI EN 300 220).
-- *Duty cycle radio da volume di traffico*: due punti "scarsamente collegati" implicano
-  presumibilmente un traffico reale basso; il rischio di sforare i limiti legali di airtime
-  locale è più teorico che pratico in questo caso specifico.
-- *Rottura delle euristiche di topologia/hop-distance*: tecnicamente vero (un hop di 1200 km
-  non si comporta come un hop radio), ma qui non è un effetto collaterale indesiderato — è
-  lo scopo dichiarato del collegamento, con lo stesso principio di EchoLink/IRLP/AllStarLink
-  o degli igate APRS-IS in radioamatore.
-- *Consenso/etichetta verso altri partecipanti*: attenuato dal fatto che l'obiettivo è
-  proprio ricongiungere due porzioni di mesh scarsamente collegate; resta comunque buona
-  norma essere trasparenti con chi usa le due mesh locali sull'esistenza del collegamento.
+### Insidie riscontrate nel deployment reale
 
-**Restano pienamente validi**
-- **Internet come single point of failure**: è il rischio residuo più importante. Una mesh
-  LoRA è per design resiliente e autonoma da infrastruttura esterna (self-healing via RF).
-  Il wormhole introduce una dipendenza da rete/ISP, server Coolify e broker Mosquitto: se uno
-  di questi cade, i due punti tornano isolati esattamente come prima del bridge. Va bene se
-  è chiaro a tutti che si tratta di un collegamento opportunistico e non di una garanzia di
-  connettività, va gestito con attenzione se qualcuno inizia a farci affidamento come se
-  fosse permanente.
-- **Nessuna validazione in ingresso**: qualunque cosa arrivi sul topic MQTT dedicato viene
-  iniettata ciecamente nella mesh fisica locale (advert falsificati, spam, flood). Essendo un
-  collegamento permanente tra due dispositivi noti (bersaglio stabile e prevedibile nel
-  tempo, non un test estemporaneo), attivare da subito autenticazione sul broker è più
-  importante che in uno scenario usa-e-getta.
-- **Superficie d'attacco aggiuntiva**: il broker (anche self-hosted su Coolify) è un servizio
-  esposto su internet in più da mantenere/patchare, e diventa un single point of
-  compromissione che prima non esisteva.
-- **Metadata leakage**: ogni pacchetto locale (contenuto raw, SNR/RSSI, timestamp, identità)
-  viene pubblicato quasi in chiaro sul broker. Lo scope è contenuto e prevedibile (traffico
-  di esattamente 2 dispositivi fissi), ma è comunque un'esposizione continuativa nel tempo,
-  diversa dal perimetro naturale di una mesh isolata fisicamente dalla portata radio.
-- **Guasti silenziosi**: un'interruzione del broker/WiFi rompe l'assunzione "mirror
-  identico" senza alcun segnale visibile agli utenti finali oltre i log di debug (perdita,
-  duplicazione o ritardo dei pacchetti).
-- **Consumo energetico**: mantenere WiFi + connessione MQTT persistente è un carico non
-  trascurabile se uno dei due dispositivi è a batteria/solare invece che alimentato da rete
-  fissa — da verificare per entrambi i siti.
+1. **Ownership del file `passwd`**: il processo Mosquitto gira come utente `mosquitto`, non
+   root. Un file creato con `docker exec <container> mosquitto_passwd -c ...` (che entra come
+   root) risulta di proprietà di `root` — Mosquitto non riesce ad aprirlo, fallisce con
+   `EACCES` (errno 13) e va in restart loop senza stampare errori nei log. Fix:
+   ```bash
+   docker exec -u root <container> chown mosquitto:mosquitto /mosquitto/config/passwd
+   docker exec -u root <container> chmod 600 /mosquitto/config/passwd
+   docker restart <container>
+   ```
+   Il warning di `mosquitto_passwd` che consiglia proprietario `root`/permessi `0700` va
+   ignorato in questo container: il file deve appartenere all'utente con cui gira il
+   processo (`mosquitto`).
+2. **La password non si aggiorna a caldo**: `password_file` viene letto in memoria solo
+   all'avvio. Dopo `mosquitto_passwd` su un container già in esecuzione serve
+   `docker restart` perché la nuova password abbia effetto.
+3. **Diagnosi di crash "silenziosi"**: se `docker logs` non mostra errori prima del riavvio,
+   bypassare il wrapper di restart con un container usa-e-getta sugli stessi volumi:
+   ```bash
+   docker run --rm -v <volume-config>:/mosquitto/config --entrypoint sh eclipse-mosquitto:2 \
+     -c 'ls -la /mosquitto/config/ && mosquitto -c /mosquitto/config/mosquitto.conf -v'
+   ```
 
-## Rimandato esplicitamente (lavoro futuro)
+## Monitoraggio/debug dei pacchetti MQTT
 
-- Cifratura/autenticazione applicativa del payload relayato (indipendente dalla sicurezza a
-  livello broker — TLS + username/password su Mosquitto, quella è consigliata da subito, vedi
-  sopra).
-- Topologia multi-nodo / hub: esplicitamente fuori scope per questo design, non solo
-  rimandata — se mai richiesta in futuro andrebbe rivalutata da capo (servirebbe
-  anti-loop/deduplica).
+- **`mosquitto_sub`** (pacchetto `mosquitto-clients`, `brew install mosquitto` su Mac):
+  ```bash
+  mosquitto_sub -h <host> -p 1883 -u <user> -P <pass> -t '#' -v
+  ```
+- **MQTT Explorer** (GUI, [mqtt-explorer.com](https://mqtt-explorer.com)): albero dei topic,
+  JSON formattato, storico messaggi, publish manuale di messaggi di test.
+- **Log del broker**: `log_type all` in `mosquitto.conf`, letti dalla tab "Logs" di Coolify.
+- **Porta non esposta pubblicamente**: terminale Coolify → `mosquitto_sub -h localhost`
+  dentro il container.
+
+## Fuori scope
+
+- Anti-loop / deduplica (`SimpleMeshTables` disponibile in `BridgeBase` se mai servisse).
+- Cifratura/autenticazione applicativa del payload relayato (indipendente da TLS/auth a
+  livello broker).
+- Topologia multi-nodo / hub.

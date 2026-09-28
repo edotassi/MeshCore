@@ -30,6 +30,10 @@
 #define WITH_BRIDGE
 #endif
 
+#ifdef WITH_MQTT_WORMHOLE_BRIDGE
+#include "helpers/bridges/MQTTWormholeBridge.h"
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -125,6 +129,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   int  matching_peer_indexes[MAX_CLIENTS];
 #if defined(WITH_MQTT_BRIDGE)
   MQTTBridge bridge;
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  MQTTWormholeBridge wormhole;
 #endif
 
   void addPost(ClientInfo* client, const char* postData);
@@ -246,6 +253,18 @@ public:
     bridge.end();
     bridge.begin();
   }
+#endif
+
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  void setWormholeState(bool enable) override {
+    if (enable == wormhole.isRunning()) return;
+    if (enable) wormhole.begin();
+    else wormhole.end();
+  }
+  bool isWormholeRunning() override { return wormhole.isRunning(); }
+  bool isWormholeConnected() override { return wormhole.isMqttConnected(); }
+  uint32_t getWormholeSentCount() override { return wormhole.getSentCount(); }
+  uint32_t getWormholeReceivedCount() override { return wormhole.getReceivedCount(); }
 #endif
 
 #if defined(WITH_MQTT_BRIDGE)

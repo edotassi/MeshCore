@@ -67,6 +67,14 @@ public:
   uint8_t mqtt_tx_enabled = 0;
   uint8_t mqtt_raw_enabled = 0;
   uint32_t mqtt_interval = 60000;
+  // Wormhole bridge settings (independent MQTT connection, separate broker from mqtt_* above)
+  uint8_t wormhole_enabled = 0;
+  char wormhole_server[64];
+  uint16_t wormhole_port = 1883;
+  char wormhole_username[32];
+  char wormhole_password[32];
+  char wormhole_pub_topic[64];
+  char wormhole_sub_topic[64];
   // Power setting
   uint8_t powersaving_enabled = 0; // boolean
   // Gps settings
@@ -83,6 +91,11 @@ public:
   uint8_t loop_detect = 0;
   uint8_t cad_enabled = 0;      // hardware Channel Activity Detection before TX (boolean)
   uint8_t extra_sf[4];
+#ifdef WITH_MQTT_BRIDGE
+  uint8_t screen_timeout_enabled = 0;  // default off: preserves pre-existing "always on" screen behaviour on MQTT/WiFi-dashboard builds
+#else
+  uint8_t screen_timeout_enabled = 1;  // default on: preserves pre-existing 20s auto-off behaviour on other builds
+#endif
 
 private:
   class RadioPrefs : public ConfigSerializer {
@@ -201,6 +214,23 @@ private:
   };
   MqttPrefs mqtt;
 
+  class WormholePrefs : public ConfigSerializer {
+    NodePrefs* _parent;
+  protected:
+    void structure() override {
+      def("en", _parent->wormhole_enabled);
+      def("srv", _parent->wormhole_server, sizeof(_parent->wormhole_server));
+      def("port", _parent->wormhole_port);
+      def("user", _parent->wormhole_username, sizeof(_parent->wormhole_username));
+      def("pass", _parent->wormhole_password, sizeof(_parent->wormhole_password));
+      def("pub", _parent->wormhole_pub_topic, sizeof(_parent->wormhole_pub_topic));
+      def("sub", _parent->wormhole_sub_topic, sizeof(_parent->wormhole_sub_topic));
+    }
+  public:
+    WormholePrefs(NodePrefs* parent) : _parent(parent) { }
+  };
+  WormholePrefs wormhole;
+
 protected:
   void structure() override {
     def("name", node_name, sizeof(node_name));
@@ -209,6 +239,7 @@ protected:
     def("owner", owner_info, sizeof(owner_info));
     def("adv_int", advert_interval);
     def("f_adv_int", flood_advert_interval);
+    def("scr_to", screen_timeout_enabled);
     def("lat", node_lat);
     def("lon", node_lon);
     def("radio", radio);
@@ -218,10 +249,11 @@ protected:
     def("room", room);
     def("power", power);
     def("mqtt", mqtt);
+    def("wormhole", wormhole);
   }
 
 public:
-  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this), mqtt(this) {
+  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this), mqtt(this), wormhole(this) {
     node_name[0] = 0;
     password[0] = 0;
     guest_password[0] = 0;
@@ -234,6 +266,11 @@ public:
     mqtt_password[0] = 0;
     mqtt_origin[0] = 0;
     mqtt_iata[0] = 0;
+    wormhole_server[0] = 0;
+    wormhole_username[0] = 0;
+    wormhole_password[0] = 0;
+    wormhole_pub_topic[0] = 0;
+    wormhole_sub_topic[0] = 0;
   }
 };
 
@@ -276,6 +313,15 @@ public:
   virtual void setBridgeState(bool enable) {
     // no op by default
   };
+
+  virtual void setWormholeState(bool enable) {
+    // no op by default
+  };
+
+  virtual bool isWormholeRunning() { return false; }
+  virtual bool isWormholeConnected() { return false; }
+  virtual uint32_t getWormholeSentCount() { return 0; }
+  virtual uint32_t getWormholeReceivedCount() { return 0; }
 
   virtual bool isMqttConnected() {
     return false;  // no op by default

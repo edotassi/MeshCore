@@ -124,30 +124,53 @@ void UITask::renderCurrScreen() {
     }
     _display->print(tmp);
 
-    // MQTT status + publish counters
-    _display->setCursor(0, 40);
-    if (_callbacks != nullptr) {
-      bool mqtt_ok = _callbacks->isMqttConnected();
-      sprintf(tmp, "MQTT:%s %lu/%lu", mqtt_ok ? "OK" : "off",
-              (unsigned long)_callbacks->getMqttOkCount(), (unsigned long)_callbacks->getMqttFailCount());
-    } else {
-      sprintf(tmp, "MQTT: off");
-    }
-    _display->print(tmp);
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    // alternate rows 40/50 between MQTT observer status and wormhole status every 5s,
+    // so both fit on the small screen without a dedicated page-switch button
+    bool show_wormhole_page = _callbacks != nullptr && (millis() / 5000) % 2 == 1;
+#else
+    bool show_wormhole_page = false;
+#endif
 
-    // packets observed by the bridge + connected room clients
-    _display->setCursor(0, 50);
-    if (_callbacks != nullptr) {
-      int clients = _callbacks->getConnectedClientCount();
-      if (clients >= 0) {
-        sprintf(tmp, "Pkts:%lu Clients:%d", (unsigned long)_callbacks->getBridgePacketCount(), clients);
-      } else {
-        sprintf(tmp, "Pkts:%lu", (unsigned long)_callbacks->getBridgePacketCount());
-      }
+    if (show_wormhole_page) {
+      // wormhole link status
+      _display->setCursor(0, 40);
+      bool wh_on = _callbacks->isWormholeRunning();
+      bool wh_ok = _callbacks->isWormholeConnected();
+      sprintf(tmp, "Wormhole:%s", !wh_on ? "off" : (wh_ok ? "OK" : "connecting"));
+      _display->print(tmp);
+
+      // packets relayed through the wormhole
+      _display->setCursor(0, 50);
+      sprintf(tmp, "WH Tx:%lu Rx:%lu", (unsigned long)_callbacks->getWormholeSentCount(),
+              (unsigned long)_callbacks->getWormholeReceivedCount());
+      _display->print(tmp);
     } else {
-      sprintf(tmp, "Pkts:0");
+      // MQTT status + publish counters
+      _display->setCursor(0, 40);
+      if (_callbacks != nullptr) {
+        bool mqtt_ok = _callbacks->isMqttConnected();
+        sprintf(tmp, "MQTT:%s %lu/%lu", mqtt_ok ? "OK" : "off",
+                (unsigned long)_callbacks->getMqttOkCount(), (unsigned long)_callbacks->getMqttFailCount());
+      } else {
+        sprintf(tmp, "MQTT: off");
+      }
+      _display->print(tmp);
+
+      // packets observed by the bridge + connected room clients
+      _display->setCursor(0, 50);
+      if (_callbacks != nullptr) {
+        int clients = _callbacks->getConnectedClientCount();
+        if (clients >= 0) {
+          sprintf(tmp, "Pkts:%lu Clients:%d", (unsigned long)_callbacks->getBridgePacketCount(), clients);
+        } else {
+          sprintf(tmp, "Pkts:%lu", (unsigned long)_callbacks->getBridgePacketCount());
+        }
+      } else {
+        sprintf(tmp, "Pkts:0");
+      }
+      _display->print(tmp);
     }
-    _display->print(tmp);
 #endif
   }
 }
@@ -179,10 +202,8 @@ void UITask::loop() {
 
       _next_refresh = millis() + 1000;   // refresh every second
     }
-#ifndef WITH_MQTT_BRIDGE
-    if (millis() > _auto_off) {
+    if (_node_prefs->screen_timeout_enabled && millis() > _auto_off) {
       _display->turnOff();
     }
-#endif
   }
 }

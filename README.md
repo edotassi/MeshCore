@@ -134,6 +134,51 @@ This fork's `simple_repeater` firmware (`v1.17.1-12-sf`) also adds an optional o
 
 This is a repeater-only addition, behind the `WITH_WIFI_DASHBOARD` build flag (see the `heltec_v4_repeater_wifidash` PlatformIO env) — it doesn't touch `companion_radio`, `simple_room_server`, or `simple_sensor`, and default repeater builds are unaffected when the flag is off.
 
+## 🌀 MQTT Wormhole Bridge (Repeater/Room Server, custom addition)
+
+A private, point-to-point relay between **exactly two paired instances** of this firmware over their own MQTT broker — e.g. linking two nodes hundreds of km apart that have no LoRa path between them. Unlike the read-only MQTT observer bridge (`WITH_MQTT_BRIDGE`, which only reports mesh activity to a public broker for dashboards), the wormhole re-injects packets back into the mesh on the receiving end, so it behaves like a long-haul LoRa link rather than a read-only feed. Full design notes: [docs/mqtt_wormhole_bridge.md](./docs/mqtt_wormhole_bridge.md).
+
+**How it works**
+
+- Every LoRa packet this node receives (`logRx`, never on transmit) is published as-is (same JSON+hex format as the MQTT observer bridge) to its own publish topic. Whatever arrives on its subscribe topic is decoded and re-injected into the local mesh, to be retransmitted over its own LoRa.
+- Runs over a second, fully independent MQTT connection (own broker, credentials and topic pair) — separate from the observer bridge, which keeps publishing to the public broker unaffected. Both can be enabled at the same time, on the same device.
+- On the receiving node, only the `disable_fwd` check is bypassed for packets that came in through the wormhole, so a room server (which doesn't forward normal mesh traffic) still relays wormhole traffic specifically; every other check (flood hop limit, loop detection, region) still applies normally.
+- No anti-loop/dedup beyond the mesh's normal duplicate-packet check, and no payload encryption of its own — only broker username/password. This is intentional: it's built for a fixed, permanent 2-node link, not a multi-node topology.
+
+**New CLI commands** (same console as other admin commands):
+
+| Command | Effect |
+|---|---|
+| `set wormhole.en on\|off` | Enables/disables the bridge, live (no reboot needed), persisted |
+| `set wormhole.server <host>` | Broker hostname/IP |
+| `set wormhole.port <port>` | Broker port (1-65535) |
+| `set wormhole.user <user>` | Broker username |
+| `set wormhole.pass <pass>` | Broker password |
+| `set wormhole.pub <topic>` | Topic this node publishes received packets to |
+| `set wormhole.sub <topic>` | Topic this node subscribes to for packets to re-inject |
+| `get wormhole.en` / `.server` / `.port` / `.user` / `.pass` / `.pub` / `.sub` | Reads back each setting (password masked as `********` if set) |
+
+On the two paired nodes, `wormhole.pub` on one must match `wormhole.sub` on the other, and vice versa (crossed pair), while `wormhole.server`/`.port`/`.user`/`.pass` are identical on both since they point at the same broker.
+
+`get wormhole.stats` reports live counters (`running`, `connected`, packets `sent`/`received` through the wormhole) — useful for checking the link is alive without external tooling.
+
+**On-device status (OLED)**: on builds with a display (e.g. `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt`), the bottom two rows of the home screen alternate every 5 seconds between the MQTT observer status (`MQTT:OK/off <published>/<failed>`, packets/clients) and the wormhole status (`Wormhole:OK/connecting/off`, `WH Tx:<sent> Rx:<received>`) — so both links can be checked at a glance in the field without a laptop.
+
+This is behind the `WITH_MQTT_WORMHOLE_BRIDGE` build flag (see the `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt` PlatformIO envs) — it coexists with `WITH_MQTT_BRIDGE` in the same build and doesn't touch `companion_radio`, `simple_secure_chat`, or `simple_sensor`.
+
+## 🖥 Screen Timeout Toggle (Repeater/Room Server, custom addition)
+
+The OLED screen auto-off (20s after last button press / boot) can now be toggled at runtime instead of only at compile time.
+
+**New CLI command** (same console as other admin commands):
+
+| Command | Effect |
+|---|---|
+| `set screen.timeout on\|off` | Enables/disables the 20s screen auto-off, persisted |
+| `get screen.timeout` | Reads back the current setting |
+
+Default depends on the build: builds with `WITH_MQTT_BRIDGE` (e.g. `heltec_v4_repeater_mqtt`, `heltec_v4_room_server_mqtt`) default to `off` — the screen stays on, matching this fork's pre-existing behavior on those builds, since they're typically desk/bench devices where the extra status rows are worth keeping visible. Other builds default to `on`, matching the original always-timeout behavior. Either way, it's now changeable without reflashing.
+
 ## 🛠 Hardware Compatibility
 
 MeshCore is designed for devices listed in the [MeshCore Flasher](https://meshcore.io/flasher)

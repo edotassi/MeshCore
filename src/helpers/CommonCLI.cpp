@@ -475,6 +475,10 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->cad_enabled = memcmp(&config[4], "on", 2) == 0;
     savePrefs();
     strcpy(reply, "OK");
+  } else if (memcmp(config, "screen.timeout ", 15) == 0) {
+    _prefs->screen_timeout_enabled = memcmp(&config[15], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
   } else if (memcmp(config, "agc.reset.interval ", 19) == 0) {
     _prefs->agc_reset_interval = atoi(&config[19]) / 4;
     savePrefs();
@@ -798,6 +802,42 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       strcpy(reply, "Error: interval must be between 1000-3600000 ms");
     }
 #endif
+#ifdef WITH_MQTT_WORMHOLE_BRIDGE
+  } else if (memcmp(config, "wormhole.en ", 12) == 0) {
+    _prefs->wormhole_enabled = memcmp(&config[12], "on", 2) == 0;
+    savePrefs();
+    _callbacks->setWormholeState(_prefs->wormhole_enabled);
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.server ", 16) == 0) {
+    StrHelper::strncpy(_prefs->wormhole_server, &config[16], sizeof(_prefs->wormhole_server));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.port ", 14) == 0) {
+    int port = _atoi(&config[14]);
+    if (port > 0 && port <= 65535) {
+      _prefs->wormhole_port = (uint16_t)port;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Error: port must be between 1 and 65535");
+    }
+  } else if (memcmp(config, "wormhole.user ", 14) == 0) {
+    StrHelper::strncpy(_prefs->wormhole_username, &config[14], sizeof(_prefs->wormhole_username));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.pass ", 14) == 0) {
+    StrHelper::strncpy(_prefs->wormhole_password, &config[14], sizeof(_prefs->wormhole_password));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.pub ", 13) == 0) {
+    StrHelper::strncpy(_prefs->wormhole_pub_topic, &config[13], sizeof(_prefs->wormhole_pub_topic));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.sub ", 13) == 0) {
+    StrHelper::strncpy(_prefs->wormhole_sub_topic, &config[13], sizeof(_prefs->wormhole_sub_topic));
+    savePrefs();
+    strcpy(reply, "OK");
+#endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud ", 12) == 0) {
     uint32_t baud = atoi(&config[12]);
@@ -881,6 +921,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
   } else if (memcmp(config, "cad", 3) == 0) {
     sprintf(reply, "> %s", _prefs->cad_enabled ? "on" : "off");
+  } else if (memcmp(config, "screen.timeout", 14) == 0) {
+    sprintf(reply, "> %s", _prefs->screen_timeout_enabled ? "on" : "off");
   } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
     sprintf(reply, "> %d", ((uint32_t) _prefs->agc_reset_interval) * 4);
   } else if (memcmp(config, "multi.acks", 10) == 0) {
@@ -1025,6 +1067,27 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", _prefs->mqtt_raw_enabled ? "on" : "off");
   } else if (memcmp(config, "mqtt.interval", 13) == 0) {
     sprintf(reply, "> %lu", (uint32_t)_prefs->mqtt_interval);
+#endif
+#ifdef WITH_MQTT_WORMHOLE_BRIDGE
+  } else if (memcmp(config, "wormhole.stats", 14) == 0) {
+    sprintf(reply, "> running=%s, connected=%s, sent=%u, received=%u",
+            _callbacks->isWormholeRunning() ? "yes" : "no",
+            _callbacks->isWormholeConnected() ? "yes" : "no",
+            (unsigned)_callbacks->getWormholeSentCount(), (unsigned)_callbacks->getWormholeReceivedCount());
+  } else if (memcmp(config, "wormhole.en", 11) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_enabled ? "on" : "off");
+  } else if (memcmp(config, "wormhole.server", 15) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_server);
+  } else if (memcmp(config, "wormhole.port", 13) == 0) {
+    sprintf(reply, "> %u", (uint32_t)_prefs->wormhole_port);
+  } else if (memcmp(config, "wormhole.user", 13) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_username);
+  } else if (memcmp(config, "wormhole.pass", 13) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_password[0] ? "********" : "");
+  } else if (memcmp(config, "wormhole.pub", 12) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_pub_topic);
+  } else if (memcmp(config, "wormhole.sub", 12) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_sub_topic);
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud", 11) == 0) {
