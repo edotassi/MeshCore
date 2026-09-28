@@ -7,7 +7,7 @@
 #include <helpers/RegionMap.h>
 #include <helpers/ConfigSerializer.h>
 
-#if defined(WITH_RS232_BRIDGE) || defined(WITH_ESPNOW_BRIDGE)
+#if defined(WITH_RS232_BRIDGE) || defined(WITH_ESPNOW_BRIDGE) || defined(WITH_MQTT_BRIDGE)
 #define WITH_BRIDGE
 #endif
 
@@ -54,6 +54,19 @@ public:
   uint32_t bridge_baud = 0;   // 9600, 19200, 38400, 57600, 115200 (default 115200)
   uint8_t bridge_channel = 0; // 1-14 (ESP-NOW only)
   char bridge_secret[16]; // for XOR encryption of bridge packets (ESP-NOW only)
+  // MQTT bridge settings (MQTT only)
+  char wifi_ssid[33];
+  char wifi_pwd[64];
+  char mqtt_server[64];
+  uint16_t mqtt_port = 1883;
+  char mqtt_username[32];
+  char mqtt_password[32];
+  char mqtt_origin[32];
+  char mqtt_iata[8];
+  uint8_t mqtt_status_enabled = 0;
+  uint8_t mqtt_tx_enabled = 0;
+  uint8_t mqtt_raw_enabled = 0;
+  uint32_t mqtt_interval = 60000;
   // Power setting
   uint8_t powersaving_enabled = 0; // boolean
   // Gps settings
@@ -166,6 +179,28 @@ private:
   };
   RoomPrefs room;
 
+  class MqttPrefs : public ConfigSerializer {
+    NodePrefs* _parent;
+  protected:
+    void structure() override {
+      def("wifi_ssid", _parent->wifi_ssid, sizeof(_parent->wifi_ssid));
+      def("wifi_pwd", _parent->wifi_pwd, sizeof(_parent->wifi_pwd));
+      def("srv", _parent->mqtt_server, sizeof(_parent->mqtt_server));
+      def("port", _parent->mqtt_port);
+      def("user", _parent->mqtt_username, sizeof(_parent->mqtt_username));
+      def("pass", _parent->mqtt_password, sizeof(_parent->mqtt_password));
+      def("origin", _parent->mqtt_origin, sizeof(_parent->mqtt_origin));
+      def("iata", _parent->mqtt_iata, sizeof(_parent->mqtt_iata));
+      def("status", _parent->mqtt_status_enabled);
+      def("tx", _parent->mqtt_tx_enabled);
+      def("raw", _parent->mqtt_raw_enabled);
+      def("interval", _parent->mqtt_interval);
+    }
+  public:
+    MqttPrefs(NodePrefs* parent) : _parent(parent) { }
+  };
+  MqttPrefs mqtt;
+
 protected:
   void structure() override {
     def("name", node_name, sizeof(node_name));
@@ -182,15 +217,23 @@ protected:
     def("repeat", repeat);
     def("room", room);
     def("power", power);
+    def("mqtt", mqtt);
   }
 
 public:
-  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this) {
+  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this), mqtt(this) {
     node_name[0] = 0;
     password[0] = 0;
     guest_password[0] = 0;
     bridge_secret[0] = 0;
     owner_info[0] = 0;
+    wifi_ssid[0] = 0;
+    wifi_pwd[0] = 0;
+    mqtt_server[0] = 0;
+    mqtt_username[0] = 0;
+    mqtt_password[0] = 0;
+    mqtt_origin[0] = 0;
+    mqtt_iata[0] = 0;
   }
 };
 
@@ -233,6 +276,14 @@ public:
   virtual void setBridgeState(bool enable) {
     // no op by default
   };
+
+  virtual bool isMqttConnected() {
+    return false;  // no op by default
+  };
+  virtual uint32_t getMqttOkCount() { return 0; }
+  virtual uint32_t getMqttFailCount() { return 0; }
+  virtual uint32_t getBridgePacketCount() { return 0; }
+  virtual int getConnectedClientCount() { return -1; }  // -1 = not applicable for this role
 
   virtual void restartBridge() {
     // no op by default

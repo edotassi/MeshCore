@@ -226,6 +226,15 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
+#ifdef WITH_BRIDGE
+  if (_prefs.bridge_pkt_src == 1) {
+#ifdef WITH_MQTT_BRIDGE
+    bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+    bridge.sendPacket(pkt);
+  }
+#endif
+
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -245,6 +254,15 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
   }
 }
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
+#ifdef WITH_BRIDGE
+  if (_prefs.bridge_pkt_src == 0) {
+#ifdef WITH_MQTT_BRIDGE
+    bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+    bridge.sendPacket(pkt);
+  }
+#endif
+
   if (_logging) {
     File f = openAppend(PACKET_LOG_FILE);
     if (f) {
@@ -633,6 +651,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
       region_map(key_store), temp_map(key_store),
       _cli(board, rtc, sensors, region_map, acl, &_prefs, this),
       telemetry(MAX_PACKET_PAYLOAD - 4)
+#if defined(WITH_MQTT_BRIDGE)
+      , bridge(&_prefs, _mgr, &rtc)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -727,6 +748,15 @@ void MyMesh::begin(FILESYSTEM *fs) {
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
   board.setLoRaFemLnaEnabled(_prefs.radio_fem_rxgain);
   board.setLoRaFemPaGainEnabled(_prefs.radio_fem_txgain);
+
+#if defined(WITH_BRIDGE)
+  if (_prefs.bridge_enabled) {
+#if defined(WITH_MQTT_BRIDGE)
+    bridge.setIdentity(getSelfId().pub_key, PUB_KEY_SIZE);
+#endif
+    bridge.begin();
+  }
+#endif
 
   updateAdvertTimer();
   updateFloodAdvertTimer();
@@ -994,6 +1024,9 @@ bool MyMesh::saveFilter(ClientInfo* client) {
 
 void MyMesh::loop() {
   mesh::Mesh::loop();
+#if defined(WITH_BRIDGE)
+  bridge.loop();
+#endif
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {
     // check for ACK timeouts

@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
 
+#ifdef WITH_MQTT_BRIDGE
+#include <WiFi.h>
+#endif
+
 #ifndef USER_BTN_PRESSED
 #define USER_BTN_PRESSED LOW
 #endif
@@ -29,11 +33,12 @@ static const uint8_t meshcore_logo [] PROGMEM = {
     0xe3, 0xe3, 0x8f, 0xff, 0x1f, 0xfc, 0x3c, 0x0e, 0x1f, 0xf8, 0xff, 0xf8, 0x70, 0x3c, 0x7f, 0xf8, 
 };
 
-void UITask::begin(NodePrefs* node_prefs, const char* build_date, const char* firmware_version) {
+void UITask::begin(NodePrefs* node_prefs, const char* build_date, const char* firmware_version, CommonCLICallbacks* callbacks) {
   _prevBtnState = HIGH;
   _auto_off = millis() + AUTO_OFF_MILLIS;
   _started_at = millis();
   _node_prefs = node_prefs;
+  _callbacks = callbacks;
   _display->turnOn();
 
 #if defined(PIN_USER_BTN) && defined(DISPLAY_CLASS)
@@ -97,6 +102,7 @@ void UITask::renderCurrScreen() {
     _display->setColor(UIColor::primary_txt);
     _display->print(_node_prefs->node_name);
 
+#ifndef WITH_MQTT_BRIDGE
     // freq / sf
     _display->setCursor(0, 20);
     sprintf(tmp, "FREQ: %06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
@@ -106,6 +112,61 @@ void UITask::renderCurrScreen() {
     _display->setCursor(0, 30);
     sprintf(tmp, "BW: %03.2f CR: %d", _node_prefs->bw, _node_prefs->cr);
     _display->print(tmp);
+#else
+    // radio params, merged onto one line to make room for status rows below
+    _display->setCursor(0, 10);
+    sprintf(tmp, "%06.3f SF%d BW%03.1f CR%d", _node_prefs->freq, _node_prefs->sf, _node_prefs->bw, _node_prefs->cr);
+    _display->print(tmp);
+
+    // uptime + free heap
+    _display->setCursor(0, 20);
+    {
+      uint32_t secs = millis() / 1000;
+      uint32_t days = secs / 86400;
+      uint32_t hours = (secs % 86400) / 3600;
+      uint32_t mins = (secs % 3600) / 60;
+      sprintf(tmp, "Up:%lud%luh%lum H:%luk", (unsigned long)days, (unsigned long)hours,
+              (unsigned long)mins, (unsigned long)(ESP.getFreeHeap() / 1024));
+    }
+    _display->print(tmp);
+
+    // WiFi status
+    _display->setCursor(0, 30);
+    if (_node_prefs->wifi_ssid[0] == 0) {
+      sprintf(tmp, "WiFi: not configured");
+    } else if (WiFi.status() == WL_CONNECTED) {
+      IPAddress ip = WiFi.localIP();
+      sprintf(tmp, "WiFi: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+    } else {
+      sprintf(tmp, "WiFi: connecting...");
+    }
+    _display->print(tmp);
+
+    // MQTT status + publish counters
+    _display->setCursor(0, 40);
+    if (_callbacks != nullptr) {
+      bool mqtt_ok = _callbacks->isMqttConnected();
+      sprintf(tmp, "MQTT:%s %lu/%lu", mqtt_ok ? "OK" : "off",
+              (unsigned long)_callbacks->getMqttOkCount(), (unsigned long)_callbacks->getMqttFailCount());
+    } else {
+      sprintf(tmp, "MQTT: off");
+    }
+    _display->print(tmp);
+
+    // packets observed by the bridge (heard on the radio, regardless of mqtt.tx/raw)
+    _display->setCursor(0, 50);
+    if (_callbacks != nullptr) {
+      int clients = _callbacks->getConnectedClientCount();
+      if (clients >= 0) {
+        sprintf(tmp, "Pkts:%lu Clients:%d", (unsigned long)_callbacks->getBridgePacketCount(), clients);
+      } else {
+        sprintf(tmp, "Pkts:%lu", (unsigned long)_callbacks->getBridgePacketCount());
+      }
+    } else {
+      sprintf(tmp, "Pkts:0");
+    }
+    _display->print(tmp);
+#endif
   }
 }
 
@@ -134,9 +195,11 @@ void UITask::loop() {
 
       _next_refresh = millis() + 1000;   // refresh every second
     }
+#ifndef WITH_MQTT_BRIDGE
     if (millis() > _auto_off) {
       _display->turnOff();
     }
+#endif
   }
 
   if (_powering_off_at > 0) { // power off timer armed

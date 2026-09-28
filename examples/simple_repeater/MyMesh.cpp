@@ -60,7 +60,7 @@
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
 
-void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
+void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr, bool has_loc, int32_t lat, int32_t lon) {
 #if MAX_NEIGHBOURS // check if neighbours enabled
   // find existing neighbour, else use least recently updated
   uint32_t oldest_timestamp = 0xFFFFFFFF;
@@ -84,6 +84,13 @@ void MyMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float sn
   neighbour->advert_timestamp = timestamp;
   neighbour->heard_timestamp = getRTCClock()->getCurrentTime();
   neighbour->snr = (int8_t)(snr * 4);
+  // only overwrite location if this update actually carried one - a plain discover-reply
+  // (has_loc=false, the default) shouldn't blank out a location learned from an earlier advert
+  if (has_loc) {
+    neighbour->has_loc = true;
+    neighbour->lat = lat;
+    neighbour->lon = lon;
+  }
 #endif
 }
 
@@ -208,6 +215,27 @@ uint8_t MyMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender
   return 0;
 }
 
+void MyMesh::getRepeaterStats(RepeaterStats& stats) {
+  stats.batt_milli_volts = board.getBattMilliVolts();
+  stats.curr_tx_queue_len = _mgr->getOutboundTotal();
+  stats.noise_floor = (int16_t)_radio->getNoiseFloor();
+  stats.last_rssi = (int16_t)radio_driver.getLastRSSI();
+  stats.n_packets_recv = radio_driver.getPacketsRecv();
+  stats.n_packets_sent = radio_driver.getPacketsSent();
+  stats.total_air_time_secs = getTotalAirTime() / 1000;
+  stats.total_up_time_secs = uptime_millis / 1000;
+  stats.n_sent_flood = getNumSentFlood();
+  stats.n_sent_direct = getNumSentDirect();
+  stats.n_recv_flood = getNumRecvFlood();
+  stats.n_recv_direct = getNumRecvDirect();
+  stats.err_events = _err_flags;
+  stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
+  stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
+  stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
+  stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
+  stats.n_recv_errors = radio_driver.getPacketsRecvErrors();
+}
+
 int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t *payload, size_t payload_len) {
   // uint32_t now = getRTCClock()->getCurrentTimeUnique();
   // memcpy(reply_data, &now, 4);   // response packets always prefixed with timestamp
@@ -215,24 +243,7 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
 
   if (payload[0] == REQ_TYPE_GET_STATUS) {  // guests can also access this now
     RepeaterStats stats;
-    stats.batt_milli_volts = board.getBattMilliVolts();
-    stats.curr_tx_queue_len = _mgr->getOutboundTotal();
-    stats.noise_floor = (int16_t)_radio->getNoiseFloor();
-    stats.last_rssi = (int16_t)radio_driver.getLastRSSI();
-    stats.n_packets_recv = radio_driver.getPacketsRecv();
-    stats.n_packets_sent = radio_driver.getPacketsSent();
-    stats.total_air_time_secs = getTotalAirTime() / 1000;
-    stats.total_up_time_secs = uptime_millis / 1000;
-    stats.n_sent_flood = getNumSentFlood();
-    stats.n_sent_direct = getNumSentDirect();
-    stats.n_recv_flood = getNumRecvFlood();
-    stats.n_recv_direct = getNumRecvDirect();
-    stats.err_events = _err_flags;
-    stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
-    stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
-    stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
-    stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
-    stats.n_recv_errors = radio_driver.getPacketsRecvErrors();
+    getRepeaterStats(stats);
     memcpy(&reply_data[4], &stats, sizeof(stats));
 
     return 4 + sizeof(stats); //  reply_len
@@ -479,6 +490,9 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
+#ifdef WITH_MQTT_BRIDGE
+    bridge.setLastRssi(_radio->getLastRSSI());
+#endif
     bridge.sendPacket(pkt);
   }
 #endif
@@ -505,6 +519,9 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 0) {
+#ifdef WITH_MQTT_BRIDGE
+    bridge.setLastRssi(_radio->getLastRSSI());
+#endif
     bridge.sendPacket(pkt);
   }
 #endif
@@ -656,7 +673,7 @@ void MyMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, uint32
   if (packet->getPathHashCount() == 0 && !isShare(packet)) {
     AdvertDataParser parser(app_data, app_data_len);
     if (parser.isValid() && parser.getType() == ADV_TYPE_REPEATER) { // just keep neigbouring Repeaters
-      putNeighbour(id, timestamp, packet->getSNR());
+      putNeighbour(id, timestamp, packet->getSNR(), parser.hasLatLon(), parser.getIntLat(), parser.getIntLon());
     }
   }
 
@@ -876,6 +893,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #if defined(WITH_ESPNOW_BRIDGE)
       , bridge(&_prefs, _mgr, &rtc)
 #endif
+#if defined(WITH_MQTT_BRIDGE)
+      , bridge(&_prefs, _mgr, &rtc)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -951,6 +971,10 @@ void MyMesh::begin(FILESYSTEM *fs) {
   _cli.loadPrefs(_fs);
   acl.load(_fs, self_id);
   store_fwd.load(_fs);
+#ifdef WITH_WIFI_DASHBOARD
+  stats_history.begin(_fs);
+  wifi_dashboard.begin(this, _fs);
+#endif
   // TODO: key_store.begin();
   region_map.load(_fs);
 
@@ -976,6 +1000,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 
 #if defined(WITH_BRIDGE)
   if (_prefs.bridge_enabled) {
+#if defined(WITH_MQTT_BRIDGE)
+    bridge.setIdentity(getSelfId().pub_key, PUB_KEY_SIZE);
+#endif
     bridge.begin();
   }
 #endif
@@ -1135,6 +1162,41 @@ void MyMesh::formatNeighborsReply(char *reply) {
   }
   *dp = 0; // null terminator
 }
+
+#ifdef WITH_WIFI_DASHBOARD
+int MyMesh::getNeighbours(NeighbourView* out, int max_out) {
+  int out_count = 0;
+#if MAX_NEIGHBOURS
+  // same "skip empty, sort newest to oldest" approach as formatNeighborsReply()
+  int16_t neighbours_count = 0;
+  NeighbourInfo* sorted_neighbours[MAX_NEIGHBOURS];
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    auto neighbour = &neighbours[i];
+    if (neighbour->heard_timestamp > 0) {
+      sorted_neighbours[neighbours_count] = neighbour;
+      neighbours_count++;
+    }
+  }
+  std::sort(sorted_neighbours, sorted_neighbours + neighbours_count, [](const NeighbourInfo* a, const NeighbourInfo* b) {
+    return a->heard_timestamp > b->heard_timestamp; // desc
+  });
+
+  uint32_t now = getRTCClock()->getCurrentTime();
+  for (int i = 0; i < neighbours_count && out_count < max_out; i++) {
+    NeighbourInfo* neighbour = sorted_neighbours[i];
+    NeighbourView& v = out[out_count];
+    mesh::Utils::toHex(v.id_hex, neighbour->id.pub_key, 4);
+    v.snr_x4 = neighbour->snr;
+    v.secs_ago = now - neighbour->heard_timestamp;
+    v.has_loc = neighbour->has_loc;
+    v.lat = neighbour->lat / 1000000.0;
+    v.lon = neighbour->lon / 1000000.0;
+    out_count++;
+  }
+#endif
+  return out_count;
+}
+#endif
 
 void MyMesh::removeNeighbor(const uint8_t *pubkey, int key_len) {
 #if MAX_NEIGHBOURS
@@ -1308,6 +1370,48 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     } else {
       strcpy(reply, "Err - bad keyid");
     }
+#ifdef WITH_WIFI_DASHBOARD
+  } else if (memcmp(command, "wifidash on", 11) == 0 && (command[11] == 0 || command[11] == ' ')) {
+    // format: wifidash on [timeout_minutes]  (omit to use the persisted default)
+    const char* arg = command + 11;
+    while (*arg == ' ') arg++;
+    uint32_t timeout_secs = (*arg) ? (uint32_t)atol(arg) * 60UL : 0;
+    wifi_dashboard.start(timeout_secs, reply);
+  } else if (strcmp(command, "wifidash off") == 0) {
+    wifi_dashboard.stop(reply);
+  } else if (strcmp(command, "wifidash status") == 0) {
+    wifi_dashboard.formatStatusReply(reply);
+  } else if (memcmp(command, "wifidash timeout ", 17) == 0) {   // format: wifidash timeout {minutes} - persisted default for future 'on' calls
+    if (wifi_dashboard.setDefaultTimeoutSecs((uint32_t)atol(&command[17]) * 60UL, _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - out of range (1-360 min)");
+    }
+  } else if (memcmp(command, "wifidash pass ", 14) == 0) {   // format: wifidash pass {password}  (HTTP Basic Auth on the dashboard page)
+    if (wifi_dashboard.setPassword(&command[14], _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - password must be empty, or >= 8 chars");
+    }
+  } else if (strcmp(command, "wifidash pass") == 0) {   // clears the password (page becomes open)
+    wifi_dashboard.setPassword("", _fs);
+    strcpy(reply, "OK - password cleared");
+  } else if (memcmp(command, "wifidash interval ", 18) == 0) {   // format: wifidash interval {seconds} - history sampling interval
+    if (stats_history.setSampleIntervalSecs((uint32_t)atol(&command[18]), _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - out of range (30-3600 secs)");
+    }
+  } else if (memcmp(command, "wifidash flushint ", 18) == 0) {   // format: wifidash flushint {seconds} - history flash-flush interval
+    if (stats_history.setFlushIntervalSecs((uint32_t)atol(&command[18]), _fs)) {
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Err - out of range (60-86400 secs)");
+    }
+  } else if (strcmp(command, "wifidash reset") == 0) {   // clears the battery/stats history (not the wifidash config itself)
+    stats_history.resetHistory(_fs);
+    strcpy(reply, "OK - history cleared");
+#endif
   } else if (memcmp(command, "discover.neighbors", 18) == 0) {
     const char* sub = command + 18;
     while (*sub == ' ') sub++;
@@ -1365,6 +1469,18 @@ void MyMesh::loop() {
   uint32_t now = millis();
   uptime_millis += now - last_millis;
   last_millis = now;
+
+#ifdef WITH_WIFI_DASHBOARD
+  if (stats_history.isSampleDue()) {   // avoid the ADC/radio reads in getRepeaterStats() except when actually sampling
+    RepeaterStats stats;
+    getRepeaterStats(stats);
+    stats_history.addSample(stats.batt_milli_volts, stats.last_rssi, stats.last_snr,
+                             stats.noise_floor, stats.n_packets_recv, stats.n_packets_sent,
+                             stats.n_recv_errors);
+  }
+  stats_history.maybeFlush(_fs);
+  wifi_dashboard.loop();
+#endif
 }
 
 // To check if there is pending work

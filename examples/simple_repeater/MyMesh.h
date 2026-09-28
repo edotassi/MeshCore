@@ -24,6 +24,11 @@
 #define WITH_BRIDGE
 #endif
 
+#ifdef WITH_MQTT_BRIDGE
+#include "helpers/bridges/MQTTBridge.h"
+#define WITH_BRIDGE
+#endif
+
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/ArduinoHelpers.h>
 #include <helpers/ClientACL.h>
@@ -37,28 +42,16 @@
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
 #include "StoreForward.h"
+#include "RepeaterStats.h"
+
+#ifdef WITH_WIFI_DASHBOARD
+#include "StatsHistory.h"
+#include "WifiDashboard.h"
+#endif
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
 #endif
-
-struct RepeaterStats {
-  uint16_t batt_milli_volts;
-  uint16_t curr_tx_queue_len;
-  int16_t  noise_floor;
-  int16_t  last_rssi;
-  uint32_t n_packets_recv;
-  uint32_t n_packets_sent;
-  uint32_t total_air_time_secs;
-  uint32_t total_up_time_secs;
-  uint32_t n_sent_flood, n_sent_direct;
-  uint32_t n_recv_flood, n_recv_direct;
-  uint16_t err_events;                // was 'n_full_events'
-  int16_t  last_snr;   // x 4
-  uint16_t n_direct_dups, n_flood_dups;
-  uint32_t total_rx_air_time_secs;
-  uint32_t n_recv_errors;
-};
 
 #ifndef MAX_CLIENTS
   #define MAX_CLIENTS           32
@@ -69,6 +62,8 @@ struct NeighbourInfo {
   uint32_t advert_timestamp;
   uint32_t heard_timestamp;
   int8_t snr; // multiplied by 4, user should divide to get float value
+  bool has_loc = false;    // true if the neighbour's last advert carried a location (AdvertDataParser::hasLatLon())
+  int32_t lat = 0, lon = 0;  // micro-degrees, same representation as AdvertDataParser::getIntLat()/getIntLon()
 };
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -76,14 +71,18 @@ struct NeighbourInfo {
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.17.1-2-sf"
+  #define FIRMWARE_VERSION   "v1.17.1-13-sf"
 #endif
 
 #define FIRMWARE_ROLE "repeater"
 
 #define PACKET_LOG_FILE  "/packet_log"
 
-class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
+class MyMesh : public mesh::Mesh, public CommonCLICallbacks
+#ifdef WITH_WIFI_DASHBOARD
+  , public WifiDashboard::DataSource
+#endif
+{
   FILESYSTEM* _fs;
   uint32_t last_millis;
   uint64_t uptime_millis;
@@ -119,10 +118,16 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   RS232Bridge bridge;
 #elif defined(WITH_ESPNOW_BRIDGE)
   ESPNowBridge bridge;
+#elif defined(WITH_MQTT_BRIDGE)
+  MQTTBridge bridge;
 #endif
   StoreForward store_fwd;
+#ifdef WITH_WIFI_DASHBOARD
+  StatsHistory stats_history;
+  WifiDashboard wifi_dashboard;
+#endif
 
-  void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
+  void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr, bool has_loc = false, int32_t lat = 0, int32_t lon = 0);
   uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
   uint8_t handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
   uint8_t handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
@@ -198,6 +203,22 @@ public:
     _cli.savePrefs(_fs);
   }
 
+  // Used by handleRequest() (REQ_TYPE_GET_STATUS) unconditionally, and doubles as the
+  // WifiDashboard::DataSource override (matching signature) when WITH_WIFI_DASHBOARD is set.
+  void getRepeaterStats(RepeaterStats& stats);
+
+#ifdef WITH_WIFI_DASHBOARD
+  // The rest of WifiDashboard::DataSource is satisfied by getNodePrefs()/getNodeName()/
+  // getFirmwareVer()/getBuildDate() already declared above (identical signatures - one
+  // definition satisfies both that interface and CommonCLICallbacks, no redeclaration needed).
+  // Only the genuinely new accessors are added here.
+  StatsHistory* getStatsHistory() override { return &stats_history; }
+  float getMCUTempC() override { return board.getMCUTemperature(); }
+  const char* getResetReasonStr() override { return board.getResetReasonString(board.getResetReason()); }
+  int getNeighbours(NeighbourView* out, int max_out) override;
+  void triggerNeighborDiscovery() override { sendNodeDiscoverReq(); }   // same as the 'discover.neighbors' CLI command
+#endif
+
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
 
   // CommonCLICallbacks
@@ -250,6 +271,15 @@ public:
     bridge.end();
     bridge.begin();
   }
+#endif
+
+#if defined(WITH_MQTT_BRIDGE)
+  bool isMqttConnected() override {
+    return bridge.isMqttConnected();
+  }
+  uint32_t getMqttOkCount() override { return bridge.getPublishOkCount(); }
+  uint32_t getMqttFailCount() override { return bridge.getPublishFailCount(); }
+  uint32_t getBridgePacketCount() override { return bridge.getPacketsObservedCount(); }
 #endif
 
   // To check if there is pending work

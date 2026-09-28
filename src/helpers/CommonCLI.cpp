@@ -5,6 +5,10 @@
 #include "TxtDataHelpers.h"
 #include <RTClib.h>
 
+#ifdef WITH_MQTT_BRIDGE
+#include <WiFi.h>
+#endif
+
 #ifndef BRIDGE_MAX_BAUD
 #define BRIDGE_MAX_BAUD 115200
 #endif
@@ -734,6 +738,66 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     savePrefs();
     strcpy(reply, "OK");
 #endif
+#ifdef WITH_MQTT_BRIDGE
+  } else if (memcmp(config, "wifi.ssid ", 10) == 0) {
+    StrHelper::strncpy(_prefs->wifi_ssid, &config[10], sizeof(_prefs->wifi_ssid));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "wifi.pwd ", 9) == 0) {
+    StrHelper::strncpy(_prefs->wifi_pwd, &config[9], sizeof(_prefs->wifi_pwd));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.server ", 12) == 0) {
+    StrHelper::strncpy(_prefs->mqtt_server, &config[12], sizeof(_prefs->mqtt_server));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.port ", 10) == 0) {
+    int port = _atoi(&config[10]);
+    if (port > 0 && port <= 65535) {
+      _prefs->mqtt_port = (uint16_t)port;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Error: port must be between 1 and 65535");
+    }
+  } else if (memcmp(config, "mqtt.username ", 14) == 0) {
+    StrHelper::strncpy(_prefs->mqtt_username, &config[14], sizeof(_prefs->mqtt_username));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.password ", 14) == 0) {
+    StrHelper::strncpy(_prefs->mqtt_password, &config[14], sizeof(_prefs->mqtt_password));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.origin ", 12) == 0) {
+    StrHelper::strncpy(_prefs->mqtt_origin, &config[12], sizeof(_prefs->mqtt_origin));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.iata ", 10) == 0) {
+    StrHelper::strncpy(_prefs->mqtt_iata, &config[10], sizeof(_prefs->mqtt_iata));
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.status ", 12) == 0) {
+    _prefs->mqtt_status_enabled = memcmp(&config[12], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.tx ", 8) == 0) {
+    _prefs->mqtt_tx_enabled = memcmp(&config[8], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.raw ", 9) == 0) {
+    _prefs->mqtt_raw_enabled = memcmp(&config[9], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
+  } else if (memcmp(config, "mqtt.interval ", 14) == 0) {
+    int interval = _atoi(&config[14]);
+    if (interval >= 1000 && interval <= 3600000) {
+      _prefs->mqtt_interval = (uint32_t)interval;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Error: interval must be between 1000-3600000 ms");
+    }
+#endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud ", 12) == 0) {
     uint32_t baud = atoi(&config[12]);
@@ -910,6 +974,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
             "rs232"
 #elif WITH_ESPNOW_BRIDGE
             "espnow"
+#elif WITH_MQTT_BRIDGE
+            "mqtt"
 #else
             "none"
 #endif
@@ -921,6 +987,44 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d", (uint32_t)_prefs->bridge_delay);
   } else if (memcmp(config, "bridge.source", 13) == 0) {
     sprintf(reply, "> %s", _prefs->bridge_pkt_src ? "logRx" : "logTx");
+#endif
+#ifdef WITH_MQTT_BRIDGE
+  } else if (memcmp(config, "mqtt.link", 9) == 0) {
+    sprintf(reply, "> %s", _callbacks->isMqttConnected() ? "connected" : "disconnected");
+  } else if (memcmp(config, "mqtt.stats", 10) == 0) {
+    sprintf(reply, "> published=%u, failed=%u, observed=%u", (unsigned)_callbacks->getMqttOkCount(),
+            (unsigned)_callbacks->getMqttFailCount(), (unsigned)_callbacks->getBridgePacketCount());
+  } else if (memcmp(config, "wifi.status", 11) == 0) {
+    if (WiFi.status() == WL_CONNECTED) {
+      IPAddress ip = WiFi.localIP();
+      sprintf(reply, "> connected, ip=%d.%d.%d.%d, rssi=%d dBm", ip[0], ip[1], ip[2], ip[3], (int)WiFi.RSSI());
+    } else {
+      sprintf(reply, "> disconnected (status=%d)", (int)WiFi.status());
+    }
+  } else if (memcmp(config, "wifi.ssid", 9) == 0) {
+    sprintf(reply, "> %s", _prefs->wifi_ssid);
+  } else if (memcmp(config, "wifi.pwd", 8) == 0) {
+    sprintf(reply, "> %s", _prefs->wifi_pwd[0] ? "********" : "");
+  } else if (memcmp(config, "mqtt.server", 11) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_server);
+  } else if (memcmp(config, "mqtt.port", 9) == 0) {
+    sprintf(reply, "> %u", (uint32_t)_prefs->mqtt_port);
+  } else if (memcmp(config, "mqtt.username", 13) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_username);
+  } else if (memcmp(config, "mqtt.password", 13) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_password[0] ? "********" : "");
+  } else if (memcmp(config, "mqtt.origin", 11) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_origin);
+  } else if (memcmp(config, "mqtt.iata", 9) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_iata);
+  } else if (memcmp(config, "mqtt.status", 11) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_status_enabled ? "on" : "off");
+  } else if (memcmp(config, "mqtt.tx", 7) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_tx_enabled ? "on" : "off");
+  } else if (memcmp(config, "mqtt.raw", 8) == 0) {
+    sprintf(reply, "> %s", _prefs->mqtt_raw_enabled ? "on" : "off");
+  } else if (memcmp(config, "mqtt.interval", 13) == 0) {
+    sprintf(reply, "> %lu", (uint32_t)_prefs->mqtt_interval);
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud", 11) == 0) {

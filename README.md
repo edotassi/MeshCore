@@ -107,6 +107,33 @@ This fork's `simple_repeater` firmware (`v1.17.1-1-sf`) adds an optional store-a
 
 This is a repeater-only addition — it doesn't touch `companion_radio`, `simple_room_server`, or `simple_sensor`.
 
+## 📊 WiFi Dashboard (Repeater, custom addition)
+
+This fork's `simple_repeater` firmware (`v1.17.1-12-sf`) also adds an optional on-demand WiFi status dashboard, built for battery/solar-powered repeaters: WiFi is off by default and only switches on for a bounded window via CLI, so normal operation pays no WiFi power cost.
+
+**How it works**
+
+- Battery, radio (RSSI/SNR/noise floor), and packet-rate stats are sampled periodically into a fixed-capacity ring buffer held in PSRAM (not flash), so normal sampling costs zero flash writes. The buffer is snapshotted to a single SPIFFS file only every *flush interval*, and only the slots actually in use — not the full fixed-size buffer — keeping flash wear negligible. History (and its logical timestamp) survives a reboot, since the snapshot is reloaded and the sample clock picks up counting from where it left off rather than restarting at zero.
+- `wifidash on` starts an open WiFi AP (`MeshCore-Dash`) and a lightweight web server serving a single self-contained HTML page — no external JS/CSS, since the AP itself has no internet access. It auto-switches back off after a configurable timeout (default 10 minutes) if left unattended; `wifidash off` shuts it down immediately.
+- The dashboard page shows: current battery/RSSI/SNR/noise-floor/packet stats, free heap, MCU temperature, last reset reason, and history usage; straight-line (deliberately not smoothed) charts for battery, RSSI/SNR/noise floor, and packet rates, each with "time ago" labels on the x-axis; a read-only dump of every repeater setting (radio, bridge, GPS, repeat, power), with the admin/guest passwords and bridge secret always redacted; and a neighbours table (ID, SNR, time since heard, location if shared) with a button that triggers the same discovery request as the `discover.neighbors` CLI command.
+- The page itself can optionally be gated behind HTTP Basic Auth (`wifidash pass`) — the AP is open at the network level (anyone in range can join the WiFi), so this is the only access control on the page's contents.
+
+**New CLI commands** (repeater firmware, same console as other admin commands):
+
+| Command | Effect |
+|---|---|
+| `wifidash on [timeout_minutes]` | Turns on the AP + dashboard page; reply includes the AP's IP. Omit the timeout to use the persisted default |
+| `wifidash off` | Immediate manual shutdown |
+| `wifidash status` | Reports on/off, IP, and time remaining before auto-off |
+| `wifidash timeout <minutes>` | Sets the persisted default auto-off timeout (1–360 min) for future `on` calls |
+| `wifidash pass <password>` | Sets an HTTP Basic Auth password on the dashboard page (≥8 chars), persisted |
+| `wifidash pass` | Clears the password — page becomes open |
+| `wifidash interval <seconds>` | Sets the history sampling interval (30–3600s), persisted |
+| `wifidash flushint <seconds>` | Sets the history flash-flush interval (60–86400s), persisted |
+| `wifidash reset` | Clears the battery/stats history immediately (wifidash config itself untouched) |
+
+This is a repeater-only addition, behind the `WITH_WIFI_DASHBOARD` build flag (see the `heltec_v4_repeater_wifidash` PlatformIO env) — it doesn't touch `companion_radio`, `simple_room_server`, or `simple_sensor`, and default repeater builds are unaffected when the flag is off.
+
 ## 🛠 Hardware Compatibility
 
 MeshCore is designed for devices listed in the [MeshCore Flasher](https://meshcore.io/flasher)

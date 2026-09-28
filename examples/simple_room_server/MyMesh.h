@@ -25,6 +25,11 @@
 #include <RTClib.h>
 #include <target.h>
 
+#ifdef WITH_MQTT_BRIDGE
+#include "helpers/bridges/MQTTBridge.h"
+#define WITH_BRIDGE
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -118,6 +123,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t pending_sf;
   uint8_t pending_cr;
   int  matching_peer_indexes[MAX_CLIENTS];
+#if defined(WITH_MQTT_BRIDGE)
+  MQTTBridge bridge;
+#endif
 
   void addPost(ClientInfo* client, const char* postData);
   void storePost(const mesh::Identity& author, const char* postData);
@@ -222,6 +230,34 @@ public:
   void onDefaultRegionChanged(const RegionEntry* r) override;
 
   mesh::LocalIdentity& getSelfId() override { return self_id; }
+
+#if defined(WITH_BRIDGE)
+  void setBridgeState(bool enable) override {
+    if (enable == bridge.isRunning()) return;
+    if (enable) {
+      bridge.begin();
+    } else {
+      bridge.end();
+    }
+  }
+
+  void restartBridge() override {
+    if (!bridge.isRunning()) return;
+    bridge.end();
+    bridge.begin();
+  }
+#endif
+
+#if defined(WITH_MQTT_BRIDGE)
+  bool isMqttConnected() override {
+    return bridge.isMqttConnected();
+  }
+  uint32_t getMqttOkCount() override { return bridge.getPublishOkCount(); }
+  uint32_t getMqttFailCount() override { return bridge.getPublishFailCount(); }
+  uint32_t getBridgePacketCount() override { return bridge.getPacketsObservedCount(); }
+#endif
+
+  int getConnectedClientCount() override { return acl.getNumClients(); }
 
   static bool saveFilter(ClientInfo* client);
 
