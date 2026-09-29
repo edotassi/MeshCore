@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
 
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
 #include <WiFi.h>
 #endif
 
@@ -102,7 +102,7 @@ void UITask::renderCurrScreen() {
     _display->setColor(UIColor::primary_txt);
     _display->print(_node_prefs->node_name);
 
-#ifndef WITH_MQTT_BRIDGE
+#if !defined(WITH_MQTT_BRIDGE) && !defined(WITH_MQTT_WORMHOLE_BRIDGE)
     // freq / sf
     _display->setCursor(0, 20);
     sprintf(tmp, "FREQ: %06.3f SF%d", _node_prefs->freq, _node_prefs->sf);
@@ -142,10 +142,13 @@ void UITask::renderCurrScreen() {
     }
     _display->print(tmp);
 
-#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
-    // alternate rows 40/50 between MQTT observer status and wormhole status every 5s,
-    // so both fit on the small screen without a dedicated page-switch button
+#if defined(WITH_MQTT_BRIDGE) && defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    // both present: alternate rows 40/50 between MQTT observer status and wormhole
+    // status every 5s, so both fit on the small screen without a page-switch button
     bool show_wormhole_page = _callbacks != nullptr && (millis() / 5000) % 2 == 1;
+#elif defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    // wormhole only, no observer: always show it, nothing to alternate with
+    bool show_wormhole_page = _callbacks != nullptr;
 #else
     bool show_wormhole_page = false;
 #endif

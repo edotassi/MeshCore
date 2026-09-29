@@ -5,7 +5,7 @@
 #include "TxtDataHelpers.h"
 #include <RTClib.h>
 
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
 #include <WiFi.h>
 #endif
 
@@ -742,7 +742,7 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     savePrefs();
     strcpy(reply, "OK");
 #endif
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
   } else if (memcmp(config, "wifi.ssid ", 10) == 0) {
     StrHelper::strncpy(_prefs->wifi_ssid, &config[10], sizeof(_prefs->wifi_ssid));
     savePrefs();
@@ -751,6 +751,8 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     StrHelper::strncpy(_prefs->wifi_pwd, &config[9], sizeof(_prefs->wifi_pwd));
     savePrefs();
     strcpy(reply, "OK");
+#endif
+#ifdef WITH_MQTT_BRIDGE
   } else if (memcmp(config, "mqtt.server ", 12) == 0) {
     StrHelper::strncpy(_prefs->mqtt_server, &config[12], sizeof(_prefs->mqtt_server));
     savePrefs();
@@ -1036,6 +1038,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "mqtt.stats", 10) == 0) {
     sprintf(reply, "> published=%u, failed=%u, observed=%u", (unsigned)_callbacks->getMqttOkCount(),
             (unsigned)_callbacks->getMqttFailCount(), (unsigned)_callbacks->getBridgePacketCount());
+#endif
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
   } else if (memcmp(config, "wifi.status", 11) == 0) {
     if (WiFi.status() == WL_CONNECTED) {
       IPAddress ip = WiFi.localIP();
@@ -1047,6 +1051,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", _prefs->wifi_ssid);
   } else if (memcmp(config, "wifi.pwd", 8) == 0) {
     sprintf(reply, "> %s", _prefs->wifi_pwd[0] ? "********" : "");
+#endif
+#ifdef WITH_MQTT_BRIDGE
   } else if (memcmp(config, "mqtt.server", 11) == 0) {
     sprintf(reply, "> %s", _prefs->mqtt_server);
   } else if (memcmp(config, "mqtt.port", 9) == 0) {

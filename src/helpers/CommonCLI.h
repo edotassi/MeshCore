@@ -91,8 +91,8 @@ public:
   uint8_t loop_detect = 0;
   uint8_t cad_enabled = 0;      // hardware Channel Activity Detection before TX (boolean)
   uint8_t extra_sf[4];
-#ifdef WITH_MQTT_BRIDGE
-  uint8_t screen_timeout_enabled = 0;  // default off: preserves pre-existing "always on" screen behaviour on MQTT/WiFi-dashboard builds
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  uint8_t screen_timeout_enabled = 0;  // default off: keeps the extra WiFi/MQTT/wormhole status rows visible
 #else
   uint8_t screen_timeout_enabled = 1;  // default on: preserves pre-existing 20s auto-off behaviour on other builds
 #endif

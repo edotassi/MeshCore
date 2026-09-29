@@ -164,7 +164,17 @@ On the two paired nodes, `wormhole.pub` on one must match `wormhole.sub` on the 
 
 **On-device status (OLED)**: on builds with a display (e.g. `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt`), the bottom two rows of the home screen alternate every 5 seconds between the MQTT observer status (`MQTT:OK/off <published>/<failed>`, packets/clients) and the wormhole status (`Wormhole:OK/connecting/off`, `WH Tx:<sent> Rx:<received>`) — so both links can be checked at a glance in the field without a laptop.
 
-This is behind the `WITH_MQTT_WORMHOLE_BRIDGE` build flag (see the `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt` PlatformIO envs) — it coexists with `WITH_MQTT_BRIDGE` in the same build and doesn't touch `companion_radio`, `simple_secure_chat`, or `simple_sensor`.
+This is behind the `WITH_MQTT_WORMHOLE_BRIDGE` build flag — it can be combined with `WITH_MQTT_BRIDGE` in the same build (both connections run independently) or used on its own (wormhole only, no public observer at all). It doesn't touch `companion_radio`, `simple_secure_chat`, or `simple_sensor`. `WITH_MQTT_BRIDGE`/`WITH_MQTT_WORMHOLE_BRIDGE` also control which CLI commands exist (`wifi.*`/`mqtt.*`/`wormhole.*`) and what the display shows — either flag alone is enough to unlock the extended status screen (WiFi/uptime + MQTT-or-wormhole row), and `wifi.ssid`/`wifi.pwd`/`wifi.status` work under either flag since both bridges share the same WiFi radio.
+
+PlatformIO envs with this flag:
+- `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt` — observer + wormhole, Heltec V4 (has PSRAM)
+- `Heltec_v3_repeater_mqtt` — observer + wormhole, Heltec V3
+- `Heltec_v3_repeater_mqtt_noota` — same, without the WiFi OTA web server (see RAM note below)
+- `Heltec_v3_repeater_wormhole_noota` — **wormhole only, no observer**, without OTA — for a node that's only ever the wormhole's local end, not also reporting to the public MQTT observer
+
+**Board RAM note**: each active MQTT connection (observer, wormhole) is a full `WiFiClient`+`PubSubClient` pair, with its own buffer and socket allocated on the heap at runtime — this is fine on boards with PSRAM (e.g. Heltec V4, 2MB PSRAM) but leaves little headroom on ESP32-S3 boards without it (e.g. Heltec V3, 320KB internal SRAM only, and the static-RAM numbers reported at compile time barely reflect this runtime cost). Two things that shrink it further:
+- `DISABLE_WIFI_OTA=1` drops `ESPAsyncWebServer`/`AsyncElegantOTA`/`AsyncTCP` entirely (~124KB flash saved on V3, negligible *static* RAM change since that library only allocates on the heap when `start ota` is actually invoked) — this removes a heap-spike risk if OTA were triggered while the wormhole is running, at the cost of losing the WiFi-based `start ota` command (still flashable via USB).
+- Dropping `WITH_MQTT_BRIDGE` when a node doesn't need the public observer removes one whole `WiFiClient`+`PubSubClient` pair — modest at the static level (~1.5KB RAM / ~12KB flash on V3) but removes an entire concurrent TCP/MQTT connection's runtime heap footprint.
 
 ## 🖥 Screen Timeout Toggle (Repeater/Room Server, custom addition)
 
@@ -177,7 +187,7 @@ The OLED screen auto-off (20s after last button press / boot) can now be toggled
 | `set screen.timeout on\|off` | Enables/disables the 20s screen auto-off, persisted |
 | `get screen.timeout` | Reads back the current setting |
 
-Default depends on the build: builds with `WITH_MQTT_BRIDGE` (e.g. `heltec_v4_repeater_mqtt`, `heltec_v4_room_server_mqtt`) default to `off` — the screen stays on, matching this fork's pre-existing behavior on those builds, since they're typically desk/bench devices where the extra status rows are worth keeping visible. Other builds default to `on`, matching the original always-timeout behavior. Either way, it's now changeable without reflashing.
+Default depends on the build: builds with `WITH_MQTT_BRIDGE` and/or `WITH_MQTT_WORMHOLE_BRIDGE` (e.g. `heltec_v4_repeater_mqtt`, `heltec_v4_room_server_mqtt`, `Heltec_v3_repeater_mqtt`, `Heltec_v3_repeater_wormhole_noota`) default to `off` — the screen stays on, matching this fork's pre-existing behavior on those builds, since they're typically desk/bench devices where the extra status rows are worth keeping visible. Other builds default to `on`, matching the original always-timeout behavior. Either way, it's now changeable without reflashing.
 
 ## 🛠 Hardware Compatibility
 
