@@ -189,6 +189,57 @@ The OLED screen auto-off (20s after last button press / boot) can now be toggled
 
 Default depends on the build: builds with `WITH_MQTT_BRIDGE` and/or `WITH_MQTT_WORMHOLE_BRIDGE` (e.g. `heltec_v4_repeater_mqtt`, `heltec_v4_room_server_mqtt`, `Heltec_v3_repeater_mqtt`, `Heltec_v3_repeater_wormhole_noota`) default to `off` — the screen stays on, matching this fork's pre-existing behavior on those builds, since they're typically desk/bench devices where the extra status rows are worth keeping visible. Other builds default to `on`, matching the original always-timeout behavior. Either way, it's now changeable without reflashing.
 
+## 💬 BBS testuale (Room Server, aggiunta custom)
+
+Una BBS a comandi testuali per Heltec V4, costruita sopra `simple_room_server`: gli utenti si registrano con la propria chiave pubblica MeshCore (nessuna password condivisa), scrivono e leggono in stanze pubbliche, si scambiano mail private, e i moderatori/admin gestiscono ruoli, ban/mute e apertura delle stanze — tutto via messaggi diretti, senza server esterni. Note di progetto e di manutenzione complete in [UPSTREAM.md](./UPSTREAM.md).
+
+**Come funziona**
+
+- Tutta la logica vive in `lib/bbs/` (pura, senza dipendenze da Arduino/MeshCore, testata nativamente con `pio test -e native`) e `lib/bbs_port/` (l'adattatore concreto: LittleFS, orologio, invio messaggi). Il firmware vero e proprio è `examples/bbs_room_server/`, copia di `simple_room_server` con un solo punto di aggancio in `onPeerDataRecv`.
+- I dati (utenti, post per stanza, mail, configurazione) sono su LittleFS in `/bbs/`, in una partizione dati da 8 MB dedicata (vedi l'environment `heltec_v4_bbs_room_server`), con log in append e integrità verificata via CRC16 — un log con la coda corrotta da uno spegnimento improvviso viene riparato all'avvio, non perso.
+- Il primo utente che si registra sul nodo diventa automaticamente amministratore. Le notifiche di post nuovi sono asincrone e accorpate (es. "3 nuovi in Generale, N per leggere"), consegnate agganciandosi al traffico che la BBS riceve comunque — nessun timer dedicato.
+- Le stanze iniziali (Generale, Annunci, Tecnico) e i limiti (dimensione messaggi, tasso anti-abuso, ritenzione post) sono costanti di compilazione in `lib/bbs/bbs_config.h`.
+
+**Comandi** (un messaggio diretto al nodo, in inglese; le risposte sono in italiano)
+
+| Comando | Effetto |
+|---|---|
+| `REGISTER <nome>` | Registrazione con la propria chiave pubblica |
+| `LOGIN` | Bentornato, con conteggio di post e mail non letti (o il messaggio del giorno, se impostato) |
+| `LOGOUT` | Chiude la sessione |
+| `H` | Elenco comandi (ridotto se non ancora registrati) |
+| `K` | Elenco delle stanze, con i post da leggere e il totale della stanza tra parentesi, es. `0:Generale(2/12)` |
+| `E [stanza] <testo>` | Pubblica un post (stanza di default se omessa) |
+| `N [stanza]` | Legge il prossimo messaggio non letto nella stanza |
+| `S <stanza>` / `U <stanza>` | Iscriviti / disiscriviti dalle notifiche di una stanza |
+| `M` | Legge la prossima mail privata non letta |
+| `M <nome> <testo>` | Invia una mail privata |
+| `SEARCH <stanza> <parola>` | Cerca una parola tra gli ultimi post della stanza |
+| `WHO` | Chi è online adesso |
+| `STATS` | Statistiche del nodo (utenti, post, mail) |
+| `MOTD` | Mostra il messaggio del giorno |
+
+**Comandi riservati** (moderatore o amministratore)
+
+| Comando | Effetto |
+|---|---|
+| `BAN <nome>` / `UNBAN <nome>` | Un utente bannato non riceve più risposte né notifiche |
+| `MUTE <nome>` / `UNMUTE <nome>` | Un utente silenziato può leggere ma non pubblicare |
+| `DELPOST <stanza>` | Cancella l'ultimo post della stanza |
+| `CLOSE <stanza>` / `OPEN <stanza>` | Una stanza chiusa resta leggibile ma rifiuta nuovi post |
+| `MODLOG` | Conteggio delle azioni di moderazione registrate |
+| `SETMOD` / `SETADMIN` / `SETUSER <nome>` | Cambia ruolo (solo amministratore) |
+| `MOTD <testo>` / `MOTD CLEAR` | Imposta/rimuove il messaggio del giorno (solo amministratore) |
+
+**Ambienti PlatformIO**
+
+- `heltec_v4_bbs_room_server` — BBS pura, nessun bridge
+- `heltec_v4_bbs_room_server_mqtt` — BBS + bridge/wormhole MQTT (vedi sopra)
+
+Entrambi usano LittleFS (non SPIFFS) e una partition table dedicata (`variants/heltec_v4_bbs/partitions_bbs.csv`): flashare uno di questi environment su un nodo che aveva in precedenza un altro firmware **riformatta la partizione dati**, perdendo l'identità del nodo e ogni dato precedente — fare un backup completo della flash (`esptool read_flash`) prima di passare a questo firmware se si vuole poter tornare indietro.
+
+**Non ancora implementato**: pannello di configurazione via CLI seriale (i parametri restano costanti di compilazione), statistiche di uptime/spazio libero/batteria e loro visualizzazione sull'OLED, avvisi automatici da sensori collegati al nodo.
+
 ## 🛠 Hardware Compatibility
 
 MeshCore is designed for devices listed in the [MeshCore Flasher](https://meshcore.io/flasher)

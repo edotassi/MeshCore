@@ -1,5 +1,7 @@
 #include "ConfigSerializer.h"
 
+#include <cstdlib>  // atoi/atol/atof: non piu' dichiarati implicitamente da <cstring> sui toolchain piu' recenti
+
 bool ConfigSerializer::saveSerial(Stream& s) {
   Context context(&s, OP::WRITE);
   _context = &context;  // set the context for structure() call
