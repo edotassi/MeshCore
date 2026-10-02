@@ -130,6 +130,69 @@ TEST(BbsPostStore, DeleteLastPostOnEmptyRoomFails) {
   EXPECT_FALSE(store.deleteLastPost(0));
 }
 
+TEST(BbsPostStore, PinLastPostThenFindPinned) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  ASSERT_TRUE(store.appendPost(0, 1, 200, "due"));
+
+  ASSERT_TRUE(store.pinLastPost(0));
+
+  PostRecord rec;
+  ASSERT_TRUE(store.findPinned(0, rec));
+  EXPECT_STREQ(rec.text, "due");
+}
+
+TEST(BbsPostStore, PinningAgainMovesThePinToTheNewLastPost) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  ASSERT_TRUE(store.pinLastPost(0));
+  ASSERT_TRUE(store.appendPost(0, 1, 200, "due"));
+  ASSERT_TRUE(store.pinLastPost(0));
+
+  PostRecord rec;
+  ASSERT_TRUE(store.findPinned(0, rec));
+  EXPECT_STREQ(rec.text, "due");  // un solo post fissato per stanza
+}
+
+TEST(BbsPostStore, PinLastPostOnEmptyRoomFails) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  EXPECT_FALSE(store.pinLastPost(0));
+  PostRecord rec;
+  EXPECT_FALSE(store.findPinned(0, rec));
+}
+
+TEST(BbsPostStore, UnpinRemovesTheCurrentPin) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  ASSERT_TRUE(store.pinLastPost(0));
+
+  ASSERT_TRUE(store.unpinRoom(0));
+  PostRecord rec;
+  EXPECT_FALSE(store.findPinned(0, rec));
+}
+
+TEST(BbsPostStore, UnpinWithNothingPinnedFails) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  EXPECT_FALSE(store.unpinRoom(0));  // nessun post era fissato
+}
+
+TEST(BbsPostStore, DeletingAPinnedPostHidesItFromFindPinned) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  ASSERT_TRUE(store.pinLastPost(0));
+  ASSERT_TRUE(store.deleteLastPost(0));
+
+  PostRecord rec;
+  EXPECT_FALSE(store.findPinned(0, rec));  // cancellato: non conta piu' come fissato valido
+}
+
 TEST(BbsPostStore, DeletedPostDoesNotBlockLaterAppends) {
   FakeFileSystem fs;
   PostStore store(fs);

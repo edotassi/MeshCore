@@ -109,5 +109,29 @@ constexpr const char* kMotdSetOk = "Messaggio del giorno aggiornato.";
 // Format string per snprintf: statistiche del nodo.
 constexpr const char* kStatsFmt = "%u utenti, %u online, %u post, %u mail.";
 
+// Fase 5: stanze dinamiche (solo amministratore).
+constexpr const char* kRoomUsage = "Usa: ROOM ADD <nome> oppure ROOM DEL <stanza>.";
+constexpr const char* kRoomNameInvalid =
+    "Nome stanza non valido: usa 1-15 caratteri (lettere, numeri, - oppure _).";
+constexpr const char* kRoomNameDuplicate = "Esiste gia' una stanza con questo nome.";
+constexpr const char* kRoomsFull = "Limite di stanze raggiunto.";
+constexpr const char* kRoomAddFailed = "Impossibile creare la stanza (errore di scrittura).";
+constexpr const char* kRoomDelFailed = "Impossibile cancellare la stanza (errore di scrittura).";
+
+// Concatenati dal parser con il nome della stanza.
+constexpr const char* kRoomAddOkPrefix = "Stanza creata: ";
+constexpr const char* kRoomDelOkPrefix = "Stanza cancellata: ";
+
+// Fase 6: post fissati (solo moderatore/amministratore per PIN/UNPIN).
+constexpr const char* kPinNothingToPin = "Nessun post da fissare in questa stanza.";
+constexpr const char* kUnpinNothingToUnpin = "Nessun post fissato da rimuovere in questa stanza.";
+
+// Concatenati dal parser con il nome della stanza.
+constexpr const char* kPinOkPrefix = "Post fissato in ";
+constexpr const char* kUnpinOkPrefix = "Fissaggio rimosso in ";
+constexpr const char* kNoPinnedPrefix = "Nessun post fissato in ";
+
+// Concatenato dal parser con "<nickname>: <testo>" del post fissato.
+
 } // namespace strings
 } // namespace bbs

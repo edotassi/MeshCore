@@ -144,6 +144,10 @@ void MQTTWormholeBridge::sendPacket(mesh::Packet* packet) {
   if (!_mqtt_client.connected()) return;
   if (_prefs->wormhole_pub_topic[0] == 0) return;
 
+  // already published (or injected from MQTT and echoed back by a local repeater): avoid duplicate/loop
+  if (_seen_packets.wasSeen(packet)) return;
+  _seen_packets.markSeen(packet);
+
   uint8_t raw_bytes[280];
   uint8_t raw_len = packet->writeTo(raw_bytes);
   char raw_hex[561];

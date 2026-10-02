@@ -23,6 +23,7 @@ constexpr uint8_t kUserFlagMuted = 0x02;
 // stanza (vedi bbs_post_store.h/.cpp per il formato esatto su file).
 // Bit di PostRecord::flags.
 constexpr uint8_t kPostFlagDeleted = 0x01;
+constexpr uint8_t kPostFlagPinned = 0x02;  // Fase 6: post fissati, vedi bbs_post_store.h
 
 struct PostRecord {
   uint8_t  version;
@@ -58,7 +59,7 @@ struct UserRecord {
   uint32_t last_login_ts;
   uint32_t last_read[BBS_MAX_ROOMS];
   uint32_t last_mail_read_seq;
-  uint8_t  subscribed_rooms;  // bitmask: bit i = iscritto alla stanza kRooms[i]
+  uint8_t  subscribed_rooms;  // bitmask: bit room_id = iscritto a quella stanza (vedi bbs_room_registry.h)
   uint8_t  reserved[9];
 };
 

@@ -173,9 +173,11 @@ salgono solo quando passa traffico LoRa reale su quel nodo.
 
 ### Esempio reale usato in questo progetto
 
-Broker Mosquitto self-hosted su Coolify, nodi "Nord Italia" e "Sud Italia" (~1200 km):
+Broker Mosquitto self-hosted su Coolify, nodi "Nord Italia" e "Sud Italia" (~1200 km).
 
-**Sud Italia (room server):**
+**Sud Italia — BBS room server (questo dispositivo, build `heltec_v4_bbs_room_server_mqtt`,
+confermato via CLI seriale: `wifi.status connected`, `mqtt.link connected`,
+`wormhole.stats running=yes, connected=yes`):**
 ```
 set wormhole.server 167.233.95.98
 set wormhole.port 1883
@@ -185,6 +187,10 @@ set wormhole.pub sud-to-nord
 set wormhole.sub nord-to-sud
 set wormhole.en on
 ```
+Su questo stesso nodo gira **anche** l'observer del punto 2 ("Esempio reale usato in questo
+progetto" lì sopra) — le due connessioni MQTT (broker pubblico `osservatori.meshcoreitalia.it`
+per l'observer, broker privato `167.233.95.98` qui per il wormhole) sono indipendenti e
+coesistono sullo stesso firmware/WiFi senza conflitti.
 
 **Nord Italia (repeater):**
 ```

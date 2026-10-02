@@ -248,6 +248,48 @@ bool UserStore::setSubscribed(UserId id, uint8_t room_id, bool subscribed) {
       bit, subscribed ? 1u : 0u);
 }
 
+bool UserStore::clearRoomForAllUsers(uint8_t room_id) {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+  UserId n = count();
+  if (n == 0) return true;
+
+  IFile* src = _fs.open(_path, 'r');
+  if (!src || !src->valid()) {
+    if (src) src->close();
+    return false;
+  }
+
+  const char* tmp_path = "/bbs/users.dat.tmp";
+  IFile* dst = _fs.open(tmp_path, 'w');
+  if (!dst || !dst->valid()) {
+    src->close();
+    if (dst) dst->close();
+    return false;
+  }
+
+  uint8_t bit = (uint8_t)(1u << room_id);
+  bool ok = true;
+  for (UserId i = 0; i < n && ok; i++) {
+    UserRecord rec;
+    ok = readFieldsFromFile(*src, rec);
+    if (ok) {
+      rec.subscribed_rooms &= (uint8_t)~bit;
+      rec.last_read[room_id] = 0;
+    }
+    ok = ok && writeFieldsToFile(*dst, rec);
+  }
+  src->close();
+  dst->close();
+
+  if (!ok) {
+    _fs.remove(tmp_path);
+    return false;
+  }
+
+  _fs.remove(_path);
+  return _fs.rename(tmp_path, _path);
+}
+
 bool UserStore::getNickname(UserId id, char* out_buf, size_t out_cap) const {
   if (out_cap < 1) return false;
   UserRecord rec;

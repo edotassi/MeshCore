@@ -254,10 +254,16 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
-#ifdef WITH_MQTT_BRIDGE
-    bridge.setLastRssi(_radio->getLastRSSI());
+    bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
 #endif
-    bridge.sendPacket(pkt);
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+#ifdef WITH_MQTT_BRIDGE
+      bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+      bridge.sendPacket(pkt);
+    }
   }
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
@@ -285,11 +291,20 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 0) {
-#ifdef WITH_MQTT_BRIDGE
-    bridge.setLastRssi(_radio->getLastRSSI());
+    bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
 #endif
-    bridge.sendPacket(pkt);
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+#ifdef WITH_MQTT_BRIDGE
+      bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+      bridge.sendPacket(pkt);
+    }
   }
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.sendPacket(pkt);
 #endif
 
   if (_logging) {
@@ -976,6 +991,17 @@ void MyMesh::formatPacketStatsReply(char *reply) {
 }
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
+  if (sender_timestamp == 0 && bbs::port::importInProgress()) {
+    // Un import e' in corso (avviato dal comando "import" qui sotto): ogni
+    // riga incollata da seriale va interpretata come dato dell'export, non
+    // come un comando — stesso schema di region_load_active qui sotto, e
+    // controllato per primo per lo stesso motivo (niente leading-space/
+    // prefix stripping da applicare ai dati).
+    bbs::port::importFeedLine(command);
+    reply[0] = 0;
+    return;
+  }
+
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
       region_map = temp_map;  // copy over the temp instance as new current map
@@ -1051,6 +1077,22 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       Serial.printf("%02X ", c->permissions);
       mesh::Utils::printHex(Serial, c->id.pub_key, PUB_KEY_SIZE);
       Serial.printf("\n");
+    }
+    reply[0] = 0;
+  } else if (sender_timestamp == 0 && strcmp(command, "export") == 0) {
+    // Backup leggibile di stanze/utenti/post su Serial: solo da console
+    // seriale (sender_timestamp == 0, mai raggiungibile dalla mesh LoRa),
+    // stesso pattern di "get acl" sopra.
+    bbs::port::exportToSerial();
+    reply[0] = 0;
+  } else if (sender_timestamp == 0 && strcmp(command, "import") == 0) {
+    // Ripristino SOLO su nodo vuoto: avvia la modalita' import (intercettata
+    // in cima a questa funzione), poi incolla il testo di "export" nella
+    // console seriale.
+    if (bbs::port::importStart()) {
+      Serial.println("Import avviato: incolla ora il testo di 'export' (da '=== BBS EXPORT' a '=== FINE EXPORT ===').");
+    } else {
+      Serial.println("Import rifiutato: il nodo ha gia' utenti registrati (serve un nodo vuoto/appena flashato).");
     }
     reply[0] = 0;
   } else if (strncmp(command, "room.post", 9) == 0) {

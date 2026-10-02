@@ -20,8 +20,9 @@ struct Fixture {
   FakeFileSystem fs;
   UserStore users{fs};
   SessionTable sessions;
+  RoomRegistry room_registry{fs};
   FakeReplyChannel reply;
-  Notifier notifier{users, sessions, reply};
+  Notifier notifier{users, sessions, room_registry, reply};
 
   UserId registerAndLogin(uint8_t seed, const char* nick, uint32_t now_ts) {
     uint8_t key[BBS_PUBKEY_LEN];

@@ -494,10 +494,16 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
-#ifdef WITH_MQTT_BRIDGE
-    bridge.setLastRssi(_radio->getLastRSSI());
+    bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
 #endif
-    bridge.sendPacket(pkt);
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+#ifdef WITH_MQTT_BRIDGE
+      bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+      bridge.sendPacket(pkt);
+    }
   }
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
@@ -526,11 +532,20 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 0) {
-#ifdef WITH_MQTT_BRIDGE
-    bridge.setLastRssi(_radio->getLastRSSI());
+    bool is_wormhole_packet = false;
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
 #endif
-    bridge.sendPacket(pkt);
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+#ifdef WITH_MQTT_BRIDGE
+      bridge.setLastRssi(_radio->getLastRSSI());
+#endif
+      bridge.sendPacket(pkt);
+    }
   }
+#endif
+#if defined(WITH_MQTT_WORMHOLE_BRIDGE)
+  if (_prefs.wormhole_enabled) wormhole.sendPacket(pkt);
 #endif
 
   if (_logging) {

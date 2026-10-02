@@ -43,6 +43,12 @@ public:
   bool isSubscribed(UserId id, uint8_t room_id) const;
   bool setSubscribed(UserId id, uint8_t room_id, bool subscribed);
 
+  // Stanze dinamiche (Fase 5): azzera per TUTTI gli utenti il bit di
+  // iscrizione e il puntatore last_read di room_id. Da chiamare quando una
+  // stanza viene cancellata dal registro, cosi' un id riassegnato a una
+  // stanza futura non eredita iscrizioni/puntatori della stanza precedente.
+  bool clearRoomForAllUsers(uint8_t room_id);
+
   // Ruoli (Fase 3). Il primo utente mai registrato in questo archivio
   // diventa automaticamente ROLE_ADMIN (bootstrap: altrimenti nessuno
   // potrebbe mai promuovere il primo admin); tutti i successivi sono

@@ -21,9 +21,14 @@ void halt() {
   while (1) ;
 }
 
-static char command[MAX_POST_TEXT_LEN+1];
+// MAX_POST_TEXT_LEN basta per un comando BBS via mesh, ma una riga incollata
+// durante "import" (timestamp + autore + marcatore PIN + testo del post, vedi
+// bbs_port_adapter.cpp) puo' superarlo: il buffer seriale deve starci intero,
+// altrimenti verrebbe troncato prima ancora di arrivare al parser dell'import.
+#define BBS_SERIAL_LINE_LEN (MAX_POST_TEXT_LEN + 64)
+static char command[BBS_SERIAL_LINE_LEN+1];
 #ifdef ETHERNET_ENABLED
-static char ethernet_command[MAX_POST_TEXT_LEN+1];
+static char ethernet_command[BBS_SERIAL_LINE_LEN+1];
 #endif
 
 void setup() {

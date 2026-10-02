@@ -112,7 +112,7 @@ void MQTTBridge::publishStatus() {
   char radio[32];
   snprintf(radio, sizeof(radio), "%.6f,%.1f,%d,%d", _prefs->freq, _prefs->bw, _prefs->sf, _prefs->cr);
 
-  char payload[384];
+  char payload[512];
   snprintf(payload, sizeof(payload),
            "{\"status\":\"online\",\"timestamp\":\"%s\",\"origin\":\"%s\",\"origin_id\":\"%s\","
            "\"radio\":\"%s\",\"model\":\"" MQTT_BRIDGE_MODEL "\",\"firmware_version\":\"" MQTT_BRIDGE_FW_VERSION "\","

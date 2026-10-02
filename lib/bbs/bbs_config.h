@@ -14,6 +14,11 @@ constexpr uint8_t BBS_MAX_ROOMS = 8;
 constexpr size_t BBS_NICK_LEN = 16;
 constexpr size_t BBS_NICK_MAX_CHARS = BBS_NICK_LEN - 1;
 
+// Lunghezza del nome di una stanza, terminatore incluso (Fase 5, stanze
+// dinamiche: vedi bbs_room_registry.h).
+constexpr size_t BBS_ROOM_NAME_LEN = 16;
+constexpr size_t BBS_ROOM_NAME_MAX_CHARS = BBS_ROOM_NAME_LEN - 1;
+
 // Dimensione fissa di un record utente su file (vedi bbs_user_store.h).
 constexpr size_t BBS_USER_RECORD_SIZE = 104;
 

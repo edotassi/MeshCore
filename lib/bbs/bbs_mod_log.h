@@ -18,6 +18,10 @@ enum class ModAction : uint8_t {
   SET_MODERATOR,
   SET_ADMIN,
   SET_USER,
+  ADD_ROOM,
+  DEL_ROOM,
+  PIN_POST,
+  UNPIN_POST,
 };
 
 struct ModLogEntry {

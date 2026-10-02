@@ -626,3 +626,170 @@ dal piano originale:
 
 Flash rifatto due volte durante queste rifiniture, stessa partition
 table/environment di prima: nessuna riformattazione, dati preservati.
+
+## Fase 5: stanze dinamiche
+
+Chiude la parte di "Configurazione" rimandata in Fase 3 (vedi sopra): solo
+l'elenco delle stanze, non i limiti numerici (dimensione messaggi, tasso
+anti-abuso, ritenzione), che restano costanti di compilazione — nessuna
+richiesta concreta di cambiarli senza riflashare, a differenza
+dell'elenco stanze.
+
+- **`lib/bbs/bbs_room_registry.h/.cpp`**: da array `constexpr` a classe
+  `RoomRegistry`, persistita su file (`/bbs/room_registry.dat`) con lo
+  stesso schema "lazy" di `bbs_room_state.h` (assente = i tre default
+  storici: Generale, Annunci, Tecnico). Tenuta in RAM (al piu'
+  `BBS_MAX_ROOMS` voci, poche decine di byte) con pattern
+  "persisti-poi-applica": `addRoom`/`removeRoom` scrivono prima il file,
+  e aggiornano lo stato in RAM solo se la scrittura riesce — niente
+  rollback da gestire a mano. Il nuovo id assegnato da `addRoom` e'
+  sempre il piu' basso libero in `[0, BBS_MAX_ROOMS)`: il bitmask di
+  iscrizione e `last_read[]` nel record utente (`bbs_types.h`) sono
+  indicizzati direttamente da `room_id`, non dalla posizione nell'elenco,
+  quindi un id resta un identificatore stabile anche se altre stanze
+  vengono aggiunte o cancellate.
+- **Riassegnazione di un id cancellato**: dato che gli id sono una
+  risorsa scarsa (`BBS_MAX_ROOMS = 8`), `removeRoom` li libera per il
+  riuso — ma un id riassegnato a una stanza futura non deve eredire nulla
+  della stanza precedente. `ROOM DEL` quindi, oltre a togliere la voce dal
+  registro, chiama `PostStore::purgeRoom` (cancella `/bbs/rNN.log`),
+  `UserStore::clearRoomForAllUsers` (azzera bit di iscrizione e
+  `last_read` per quell'id, per *tutti* gli utenti — unica riscrittura
+  dell'intero file utenti invece che di un solo record, come gia' faceva
+  `rewriteApplying` per un id singolo) e `RoomState::setClosed(id, false)`
+  (una stanza riassegnata parte sempre aperta). Scelta deliberata, chiesta
+  esplicitamente: niente migrazione/archiviazione dei dati della stanza
+  cancellata, si cancella e basta.
+- **Comandi aggiunti** (solo amministratore, come `SETMOD`/`SETADMIN`):
+  `ROOM ADD <nome>` (nome validato come i nickname: 1-15 caratteri,
+  lettere/numeri/-/_, niente spazi; rifiutato se duplicato o se il
+  registro è già a `BBS_MAX_ROOMS`) e `ROOM DEL <stanza>`. Non elencati in
+  `H`, stesso criterio degli altri comandi riservati.
+- **`kDefaultSubscribedMask`** resta una costante di compilazione (bit 0 e
+  1, Generale e Annunci): è una scelta di prodotto su "a cosa si iscrive
+  un utente nuovo", non una proprietà della singola stanza — una stanza
+  aggiunta con `ROOM ADD` è sempre opt-in via `S`, come già lo era
+  Tecnico.
+- Tutti i punti che prima leggevano l'array globale `kRooms`/`kNumRooms`
+  (`bbs_command_parser.cpp`, `bbs_notifier.cpp`, `bbs_port_adapter.cpp`)
+  ora passano per `ctx.room_registry`/un riferimento a `RoomRegistry`
+  iniettato nel costruttore (`Notifier` ne ha guadagnato uno).
+  `CommandContext` guadagna il campo `room_registry`.
+- Test: nuova suite `test/test_bbs_room_registry/` (default, add con id
+  piu' basso libero, nomi duplicati/invalidi, registro pieno, remove e
+  riuso dell'id), `test_bbs_command_parser` esteso con l'intera matrice
+  `ROOM ADD`/`ROOM DEL` (permessi, errori, e la verifica end-to-end che un
+  id riassegnato non eredita post/iscrizioni della stanza cancellata).
+  **55/55** in `test_bbs_command_parser` (7 nuovi) e **6/6** nella nuova
+  `test_bbs_room_registry` passano, `test_bbs_notifier` invariato a 8/8 —
+  verificato compilando e linkando ogni unità di `lib/bbs/` (ambiente
+  locale senza PlatformIO disponibile: verifica fatta con g++/gtest
+  compilati da sorgente, non con `pio test -e native`); non ricompilato
+  su hardware reale in questo passaggio.
+
+## Fase 6: post fissati, export/import via seriale, liste multi-riga
+
+- **Post fissati**: `kPostFlagPinned` nuovo bit in `PostRecord::flags`
+  (`bbs_types.h`), al pari di `kPostFlagDeleted`. `PostStore` guadagna
+  `pinLastPost`/`unpinRoom`/`findPinned`. Stessa convenzione di
+  `deleteLastPost`: nessuna numerazione dei post esposta agli utenti,
+  si opera sempre sull'ultimo post fisico della stanza. Al più un post
+  fissato per stanza: `pinLastPost` pulisce il bit su tutti i record
+  (riscrittura dell'intero file, come `deleteLastPost`/`enforceRetention`)
+  prima di impostarlo sull'ultimo — fissarne uno nuovo sposta semplicemente
+  il fissaggio, senza bisogno di un comando di sblocco esplicito.
+  `findPinned` ignora un record marcato anche come cancellato (un
+  `DELPOST` su un post fissato lo nasconde da `PINNED` senza bisogno di
+  gestione incrociata nel comando). Comandi `PIN <stanza>`/`UNPIN <stanza>`
+  (moderatore+, stesso schema di `CLOSE`/`OPEN`) e `PINNED [stanza]`
+  (chiunque, prefisso stanza opzionale come `E`/`N`, stanza di default se
+  omessa). `ModAction` guadagna `PIN_POST`/`UNPIN_POST`.
+- **`export`/`import` via seriale**: comandi amministrativi che girano solo
+  da console USB, mai dalla mesh LoRa — stesso meccanismo gia' usato da
+  `get acl`/`erase` in `CommonCLI`/`MyMesh::handleCommand`
+  (`examples/bbs_room_server/main.cpp` passa `sender_timestamp = 0` ai
+  comandi letti da `Serial`; i branch in `MyMesh::handleCommand` controllano
+  `sender_timestamp == 0` prima di eseguire, cosi' lo stesso testo ricevuto
+  via radio verrebbe ignorato). Nuova `bbs::port::exportToSerial()`
+  (`lib/bbs_port/bbs_port_adapter.h/.cpp`, unico punto oltre a
+  `bbs_port_littlefs.h`/`bbs_port_clock.h` che tocca direttamente header
+  Arduino) stampa su `Serial` un formato testuale versionato ("BBS EXPORT
+  v1": sezioni `[ROOMS]`/`[USERS]`/`[POSTS room=N]`, campi separati da tab)
+  pensato per essere riletto, utile come backup leggibile prima di un
+  repair/riflash. **Deliberatamente esclude il contenuto della mail
+  privata** (dato personale di due soli utenti, non necessario per un
+  backup dei contenuti pubblici) e le iscrizioni/puntatori "ultimo letto"
+  (stato poco interessante da conservare: dopo un ripristino tutti
+  ripartono con i default e tutto da leggere) — se servisse in futuro,
+  andrebbe dietro a una scelta esplicita documentata.
+  `created_ts`/`last_login_ts` non sono preservati: dopo un import valgono
+  il momento dell'import, non l'originale (semplificazione: nessuna logica
+  della BBS dipende dal loro valore esatto).
+  `bbs::port::importStart()`/`importInProgress()`/`importFeedLine()`
+  implementano il ripristino, **solo su nodo vuoto** (rifiutato se
+  `UserStore::count() > 0` — l'import non fa merge con dati esistenti, solo
+  restore completo su un nodo appena flashato/cancellato, come richiesto).
+  Il meccanismo di "modalita' incolla multi-riga" riusa un pattern gia'
+  presente nello stesso file per un caso analogo:
+  `region_load_active`/`StrHelper::isBlank` (caricamento bulk della region
+  map via CLI, vedi `CommonCLI::startRegionsLoad`) intercetta ogni riga
+  finche' non vede la riga di terminazione, esattamente come il mio
+  `bbs::port::importInProgress()` controllato in cima a
+  `MyMesh::handleCommand` intercetta ogni riga incollata finche' non vede
+  `=== FINE EXPORT ===`. Dettagli del ripristino:
+  - Utenti: pubkey (esadecimale, 32 byte) + nickname ricreano l'account via
+    `registerUser` (che assegna id in ordine di registrazione, come
+    all'origine); ruolo/ban/mute vengono poi riapplicati con
+    `setRole`/`setBanned`/`setMuted` perche' `registerUser` forza sempre
+    `ROLE_USER` tranne che per il primissimo utente (bootstrap admin) — che
+    pero' coincide gia' con l'ammnistratore originale, visto che l'import
+    ricrea gli utenti nello stesso ordine dell'export.
+  - Stanze: un nodo vuoto parte gia' con Generale/Annunci/Tecnico
+    (`RoomRegistry`); l'import aggiunge solo le stanze mancanti (l'id
+    assegnato da `addRoom`, il piu' basso libero, torna a combaciare
+    proprio perche' si parte da registro vuoto nello stesso ordine) e, cosa
+    non ovvia, **rimuove le stanze di default che l'export non elenca**
+    (`pruneRoomsNotSeenDuringImport`, stesso percorso di pulizia di `ROOM
+    DEL`): se l'originale aveva cancellato Tecnico prima del backup, un
+    ripristino naive l'avrebbe fatta ricomparire solo perche' e' un
+    default del registro vuoto.
+  - Post: un post fissato nell'originale viene ri-fissato subito dopo
+    essere stato riscritto (`pinLastPost` sul post appena appeso, prima che
+    altri lo seguano) invece di tentare di "spostare" un fissaggio dopo il
+    fatto.
+  - Errori di singola riga (pubkey non valida, autore non trovato, stanza
+    che non riesce a riottenere lo stesso id) non interrompono l'import:
+    vengono stampati su `Serial` e quella riga viene saltata, con un
+    riepilogo "completato con errori" alla fine — scelta deliberata per non
+    perdere il resto di un backup per un singolo record corrotto.
+  - `examples/bbs_room_server/main.cpp`: il buffer `command` (dimensionato
+    su `MAX_POST_TEXT_LEN`, sufficiente per un comando BBS via mesh) e'
+    stato allargato (`BBS_SERIAL_LINE_LEN = MAX_POST_TEXT_LEN + 64`) perche'
+    una riga `[POSTS]` incollata durante l'import (timestamp + autore +
+    marcatore `PIN` + testo del post) puo' superare la sola lunghezza del
+    testo — altrimenti sarebbe stata troncata prima di arrivare al parser.
+- **Liste multi-riga**: `K` (elenco stanze) e `WHO` (elenco utenti online)
+  ora separano le voci con `\n` invece che con uno spazio — richiesto
+  esplicitamente per leggibilita' su OLED/client multi-riga. Verificato
+  che non rompe nulla lato storage/framing: il testo dei post e' gia' un
+  buffer length-prefixed (non delimitato, vedi `bbs_post_store.cpp`), il
+  CRC16 tratta `\n` come un byte qualunque, e il payload TXT_MSG e' una
+  stringa C senza filtri sui caratteri (`MyMesh::sendBbsReply`). Non
+  verificato invece il rendering lato client/app companion (il repo non
+  ne contiene il codice, solo il protocollo) — rischio di sola UX, non di
+  correttezza: se il client non va a capo su `\n`, la stringa resta
+  comunque leggibile, solo su una riga sola.
+- Test: nuovi `test_bbs_post_store` (pin/unpin/findPinned, inclusa
+  l'interazione con `deleteLastPost`) e nuovi casi in
+  `test_bbs_command_parser` (permessi, sostituzione del fissaggio, lettura
+  con/senza prefisso stanza); stringhe dei nuovi messaggi aggiunte al test
+  di budget byte. **61/61** in `test_bbs_command_parser` (6 nuovi) e
+  **24/24** in `test_bbs_post_store` (6 nuovi) passano — stessa modalita'
+  di verifica della Fase 5 (g++/gtest locali, non `pio test -e native`).
+  `exportToSerial()`/`importStart()`/`importFeedLine()` e i branch
+  `export`/`import` in `MyMesh.cpp` non sono testabili nativamente
+  (dipendono da `Serial`/Arduino, stesso limite della Fase 2 per
+  `MyMeshReplyChannel`): solo revisione manuale, non compilati ne' eseguiti
+  su hardware reale in questo passaggio — da verificare su banco prima
+  dell'uso: un ciclo `export` → `erase`/riflash → `import` → confronto con
+  un nuovo `export` è il test end-to-end naturale, non ancora eseguito.

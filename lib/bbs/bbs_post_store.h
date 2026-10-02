@@ -52,6 +52,27 @@ public:
   // false se non trovato.
   bool searchRecent(uint8_t room_id, const char* needle, uint32_t max_scan, PostRecord& out) const;
 
+  // Stanze dinamiche (Fase 5): rimuove il log della stanza (se esiste). Da
+  // chiamare quando una stanza viene cancellata dal registro (vedi
+  // bbs_room_registry.h), cosi' un id riassegnato a una stanza futura non
+  // ne eredita i post. Ritorna true anche se il file non esisteva.
+  bool purgeRoom(uint8_t room_id);
+
+  // Post fissati (Fase 6): al piu' un post fissato per stanza, come un
+  // bollettino che resta in cima finche' un moderatore non lo rimuove o non
+  // ne fissa un altro. Fissa l'ultimo post della stanza (stessa convenzione
+  // di deleteLastPost: nessuna numerazione dei post esposta agli utenti).
+  // Ritorna false se la stanza non ha post.
+  bool pinLastPost(uint8_t room_id);
+
+  // Rimuove il fissaggio corrente della stanza, se presente. Ritorna false
+  // se non c'era nessun post fissato (o la stanza non ha nemmeno un log).
+  bool unpinRoom(uint8_t room_id);
+
+  // Il post attualmente fissato nella stanza, se c'e' (e non e' stato nel
+  // frattempo cancellato con DELPOST). Ritorna false altrimenti.
+  bool findPinned(uint8_t room_id, PostRecord& out) const;
+
 private:
   IFileSystem& _fs;
 

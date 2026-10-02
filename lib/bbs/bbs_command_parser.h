@@ -9,6 +9,7 @@
 #include "bbs_notifier.h"
 #include "bbs_pending_welcome.h"
 #include "bbs_post_store.h"
+#include "bbs_room_registry.h"
 #include "bbs_room_state.h"
 #include "bbs_session_table.h"
 #include "bbs_user_store.h"
@@ -23,6 +24,7 @@ struct CommandContext {
   SessionTable& sessions;
   Notifier& notifier;
   RoomState& rooms;
+  RoomRegistry& room_registry;
   ModLog& modlog;
   MotdStore& motd;
   const uint8_t* pub_key;  // BBS_PUBKEY_LEN byte, del mittente

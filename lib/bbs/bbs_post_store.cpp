@@ -290,6 +290,133 @@ bool PostStore::enforceRetention(uint8_t room_id, uint32_t max_records) {
   return _fs.rename(tmp_path, path);
 }
 
+bool PostStore::purgeRoom(uint8_t room_id) {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+  char path[16];
+  roomPath(room_id, path, sizeof(path));
+  _fs.remove(path);  // no-op se il file non esiste
+  return true;
+}
+
+bool PostStore::pinLastPost(uint8_t room_id) {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+
+  char path[16];
+  roomPath(room_id, path, sizeof(path));
+
+  IFile* src = _fs.open(path, 'r');
+  if (!src || !src->valid()) {
+    if (src) src->close();
+    return false;
+  }
+  uint32_t total = 0;
+  PostRecord tmp;
+  while (readRecord(*src, tmp)) total++;
+  src->close();
+  if (total == 0) return false;
+
+  src = _fs.open(path, 'r');
+  if (!src || !src->valid()) {
+    if (src) src->close();
+    return false;
+  }
+  char tmp_path[24];
+  snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+  IFile* dst = _fs.open(tmp_path, 'w');
+  if (!dst || !dst->valid()) {
+    src->close();
+    if (dst) dst->close();
+    return false;
+  }
+
+  bool ok = true;
+  uint32_t idx = 0;
+  PostRecord rec;
+  while (ok && readRecord(*src, rec)) {
+    rec.flags &= (uint8_t)~kPostFlagPinned;  // al piu' un post fissato per stanza
+    if (idx == total - 1) rec.flags |= kPostFlagPinned;
+    ok = writeRecord(*dst, rec);
+    idx++;
+  }
+  src->close();
+  dst->close();
+
+  if (!ok) {
+    _fs.remove(tmp_path);
+    return false;
+  }
+
+  _fs.remove(path);
+  return _fs.rename(tmp_path, path);
+}
+
+bool PostStore::unpinRoom(uint8_t room_id) {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+
+  char path[16];
+  roomPath(room_id, path, sizeof(path));
+
+  IFile* src = _fs.open(path, 'r');
+  if (!src || !src->valid()) {
+    if (src) src->close();
+    return false;  // niente da sfissare
+  }
+
+  char tmp_path[24];
+  snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+  IFile* dst = _fs.open(tmp_path, 'w');
+  if (!dst || !dst->valid()) {
+    src->close();
+    if (dst) dst->close();
+    return false;
+  }
+
+  bool ok = true;
+  bool had_pinned = false;
+  PostRecord rec;
+  while (ok && readRecord(*src, rec)) {
+    if (rec.flags & kPostFlagPinned) {
+      rec.flags &= (uint8_t)~kPostFlagPinned;
+      had_pinned = true;
+    }
+    ok = writeRecord(*dst, rec);
+  }
+  src->close();
+  dst->close();
+
+  if (!ok) {
+    _fs.remove(tmp_path);
+    return false;
+  }
+
+  _fs.remove(path);
+  if (!_fs.rename(tmp_path, path)) return false;
+  return had_pinned;
+}
+
+bool PostStore::findPinned(uint8_t room_id, PostRecord& out) const {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+
+  char path[16];
+  roomPath(room_id, path, sizeof(path));
+  IFile* f = _fs.open(path, 'r');
+  if (!f || !f->valid()) {
+    if (f) f->close();
+    return false;
+  }
+
+  bool found = false;
+  PostRecord rec;
+  while (readRecord(*f, rec)) {
+    if ((rec.flags & kPostFlagDeleted) == 0 && (rec.flags & kPostFlagPinned) != 0) {
+      out = rec;
+      found = true;
+    }
+  }
+  f->close();
+  return found;
+}
+
 bool PostStore::searchRecent(uint8_t room_id, const char* needle, uint32_t max_scan, PostRecord& out) const {
   if (room_id >= BBS_MAX_ROOMS || needle[0] == 0) return false;
 

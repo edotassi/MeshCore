@@ -3,13 +3,12 @@
 #include <cstdio>
 #include <cstring>
 
-#include "bbs_room_registry.h"
 #include "bbs_strings_it.h"
 
 namespace bbs {
 
-Notifier::Notifier(UserStore& users, SessionTable& sessions, IReplyChannel& reply)
-    : _users(users), _sessions(sessions), _reply(reply) {}
+Notifier::Notifier(UserStore& users, SessionTable& sessions, RoomRegistry& rooms, IReplyChannel& reply)
+    : _users(users), _sessions(sessions), _rooms(rooms), _reply(reply) {}
 
 void Notifier::onNewPost(uint8_t room_id, UserId author_id, uint32_t now_ts) {
   size_t n = _sessions.count();
@@ -31,8 +30,8 @@ void Notifier::tick(uint32_t now_ts) {
   for (size_t i = 0; i < n; i++) {
     UserId uid = _sessions.userIdAt(i);
 
-    for (size_t r = 0; r < kNumRooms; r++) {
-      uint8_t room_id = kRooms[r].id;
+    for (size_t r = 0; r < _rooms.count(); r++) {
+      uint8_t room_id = _rooms.at(r).id;
       if (!_sessions.hasPendingReadyToFlush(uid, room_id, now_ts)) continue;
 
       uint16_t count = _sessions.consumePending(uid, room_id);
@@ -40,7 +39,7 @@ void Notifier::tick(uint32_t now_ts) {
       if (_users.isBanned(uid)) continue;  // bannato dopo che il post era gia' in coda
 
       char msg[64];
-      snprintf(msg, sizeof(msg), strings::kNewPostsNotifyFmt, (unsigned)count, kRooms[r].name);
+      snprintf(msg, sizeof(msg), strings::kNewPostsNotifyFmt, (unsigned)count, _rooms.at(r).name);
 
       uint8_t pub_key[BBS_PUBKEY_LEN];
       if (!_users.getPubkey(uid, pub_key)) continue;
