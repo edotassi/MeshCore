@@ -29,6 +29,9 @@ class MQTTBridge : public BridgeBase {
   uint8_t _self_pub_key[32];
   bool _have_identity = false;
 
+  mesh::MainBoard* _board = nullptr;
+  mesh::Radio* _radio = nullptr;
+
   unsigned long _last_status_publish = 0;
   unsigned long _last_reconnect_attempt = 0;
   bool _ntp_started = false;
@@ -39,6 +42,8 @@ class MQTTBridge : public BridgeBase {
   uint32_t _packets_observed_count = 0;
 
   float _last_rssi = 0;
+  uint32_t _tx_air_secs = 0;
+  uint32_t _rx_air_secs = 0;
 
   void ensureWifi();
   bool ensureMqtt();
@@ -59,6 +64,18 @@ public:
 
   /** @brief Optional: last RSSI reading, included in the next published packet JSON. */
   void setLastRssi(float rssi) { _last_rssi = rssi; }
+
+  /** @brief Optional: board reference, used to report real battery_mv in the status heartbeat. */
+  void setBoard(mesh::MainBoard* board) { _board = board; }
+
+  /** @brief Optional: radio reference, used to report real noise_floor in the status heartbeat. */
+  void setRadio(mesh::Radio* radio) { _radio = radio; }
+
+  /** @brief Optional: cumulative TX/RX radio airtime (seconds), included in the next status heartbeat. */
+  void setAirtimeStats(uint32_t tx_air_secs, uint32_t rx_air_secs) {
+    _tx_air_secs = tx_air_secs;
+    _rx_air_secs = rx_air_secs;
+  }
 
   void begin() override;
   void end() override;

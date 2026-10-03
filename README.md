@@ -141,7 +141,8 @@ A private, point-to-point relay between **exactly two paired instances** of this
 **How it works**
 
 - Every LoRa packet this node receives (`logRx`, never on transmit) is published as-is (same JSON+hex format as the MQTT observer bridge) to its own publish topic. Whatever arrives on its subscribe topic is decoded and re-injected into the local mesh, to be retransmitted over its own LoRa.
-- Runs over a second, fully independent MQTT connection (own broker, credentials and topic pair) — separate from the observer bridge, which keeps publishing to the public broker unaffected. Both can be enabled at the same time, on the same device.
+- Runs over a second, fully independent MQTT connection (own broker, credentials and topic pair) — separate from the observer bridge. Both can be enabled at the same time, on the same device.
+- By default, packets injected from the wormhole are **not** re-published on the public observer MQTT (`mqtt.*`) when this node later retransmits them over its own LoRa — only to the wormhole's own private topic. Set `wormhole.to_pub on` to also publish them on the public observer feed, as before this guard existed.
 - On the receiving node, only the `disable_fwd` check is bypassed for packets that came in through the wormhole, so a room server (which doesn't forward normal mesh traffic) still relays wormhole traffic specifically; every other check (flood hop limit, loop detection, region) still applies normally.
 - No anti-loop/dedup beyond the mesh's normal duplicate-packet check, and no payload encryption of its own — only broker username/password. This is intentional: it's built for a fixed, permanent 2-node link, not a multi-node topology.
 
@@ -156,7 +157,8 @@ A private, point-to-point relay between **exactly two paired instances** of this
 | `set wormhole.pass <pass>` | Broker password |
 | `set wormhole.pub <topic>` | Topic this node publishes received packets to |
 | `set wormhole.sub <topic>` | Topic this node subscribes to for packets to re-inject |
-| `get wormhole.en` / `.server` / `.port` / `.user` / `.pass` / `.pub` / `.sub` | Reads back each setting (password masked as `********` if set) |
+| `set wormhole.to_pub on\|off` | Also re-publish wormhole-injected packets on the public observer MQTT when retransmitted (default off) |
+| `get wormhole.en` / `.server` / `.port` / `.user` / `.pass` / `.pub` / `.sub` / `.to_pub` | Reads back each setting (password masked as `********` if set) |
 
 On the two paired nodes, `wormhole.pub` on one must match `wormhole.sub` on the other, and vice versa (crossed pair), while `wormhole.server`/`.port`/`.user`/`.pass` are identical on both since they point at the same broker.
 

@@ -256,9 +256,9 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
   if (_prefs.bridge_pkt_src == 1) {
     bool is_wormhole_packet = false;
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
-    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt) && !_prefs.wormhole_relay_to_public;
 #endif
-    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato, a meno che wormhole.to_pub sia on
 #ifdef WITH_MQTT_BRIDGE
       bridge.setLastRssi(_radio->getLastRSSI());
 #endif
@@ -293,9 +293,9 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
   if (_prefs.bridge_pkt_src == 0) {
     bool is_wormhole_packet = false;
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
-    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt);
+    is_wormhole_packet = wormhole.wasInjectedByWormhole(pkt) && !_prefs.wormhole_relay_to_public;
 #endif
-    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato
+    if (!is_wormhole_packet) {  // non pubblicare sull'observer pubblico traffico iniettato dal wormhole privato, a meno che wormhole.to_pub sia on
 #ifdef WITH_MQTT_BRIDGE
       bridge.setLastRssi(_radio->getLastRSSI());
 #endif
@@ -814,6 +814,8 @@ void MyMesh::begin(FILESYSTEM *fs) {
   if (_prefs.bridge_enabled) {
 #if defined(WITH_MQTT_BRIDGE)
     bridge.setIdentity(getSelfId().pub_key, PUB_KEY_SIZE);
+    bridge.setBoard(&board);
+    bridge.setRadio(_radio);
 #endif
     bridge.begin();
   }
@@ -1116,6 +1118,9 @@ bool MyMesh::saveFilter(ClientInfo* client) {
 void MyMesh::loop() {
   mesh::Mesh::loop();
 #if defined(WITH_BRIDGE)
+#if defined(WITH_MQTT_BRIDGE)
+  bridge.setAirtimeStats(getTotalAirTime() / 1000, getReceiveAirTime() / 1000);
+#endif
   bridge.loop();
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)

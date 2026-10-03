@@ -112,15 +112,20 @@ void MQTTBridge::publishStatus() {
   char radio[32];
   snprintf(radio, sizeof(radio), "%.6f,%.1f,%d,%d", _prefs->freq, _prefs->bw, _prefs->sf, _prefs->cr);
 
-  char payload[512];
+  uint16_t battery_mv = _board ? _board->getBattMilliVolts() : 0;
+  int noise_floor = _radio ? _radio->getNoiseFloor() : 0;
+  int queue_len = _mgr ? _mgr->getOutboundTotal() : 0;
+
+  char payload[640];
   snprintf(payload, sizeof(payload),
            "{\"status\":\"online\",\"timestamp\":\"%s\",\"origin\":\"%s\",\"origin_id\":\"%s\","
            "\"radio\":\"%s\",\"model\":\"" MQTT_BRIDGE_MODEL "\",\"firmware_version\":\"" MQTT_BRIDGE_FW_VERSION "\","
            "\"client_version\":\"meshcore-mqtt-bridge/" MQTT_BRIDGE_FW_VERSION "\","
-           "\"stats\":{\"battery_mv\":0,\"uptime_secs\":%lu,\"errors\":%u,\"queue_len\":0,"
-           "\"noise_floor\":0,\"tx_air_secs\":0,\"rx_air_secs\":0}}",
+           "\"stats\":{\"battery_mv\":%u,\"uptime_secs\":%lu,\"errors\":%u,\"queue_len\":%d,"
+           "\"noise_floor\":%d,\"tx_air_secs\":%u,\"rx_air_secs\":%u}}",
            timestamp, _prefs->mqtt_origin, pub_hex, radio,
-           millis() / 1000, (unsigned)_publish_fail_count);
+           battery_mv, millis() / 1000, (unsigned)_publish_fail_count, queue_len, noise_floor,
+           (unsigned)_tx_air_secs, (unsigned)_rx_air_secs);
 
   trackPublish(_mqtt_client.publish(topic, payload, true));  // retained
 }

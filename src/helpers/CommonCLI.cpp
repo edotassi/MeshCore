@@ -839,6 +839,10 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     StrHelper::strncpy(_prefs->wormhole_sub_topic, &config[13], sizeof(_prefs->wormhole_sub_topic));
     savePrefs();
     strcpy(reply, "OK");
+  } else if (memcmp(config, "wormhole.to_pub ", 16) == 0) {
+    _prefs->wormhole_relay_to_public = memcmp(&config[16], "on", 2) == 0;
+    savePrefs();
+    strcpy(reply, "OK");
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud ", 12) == 0) {
@@ -1094,6 +1098,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", _prefs->wormhole_pub_topic);
   } else if (memcmp(config, "wormhole.sub", 12) == 0) {
     sprintf(reply, "> %s", _prefs->wormhole_sub_topic);
+  } else if (memcmp(config, "wormhole.to_pub", 15) == 0) {
+    sprintf(reply, "> %s", _prefs->wormhole_relay_to_public ? "on" : "off");
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud", 11) == 0) {

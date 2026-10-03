@@ -75,6 +75,7 @@ public:
   char wormhole_password[32];
   char wormhole_pub_topic[64];
   char wormhole_sub_topic[64];
+  uint8_t wormhole_relay_to_public = 0; // off by default: don't re-publish wormhole-injected packets on the public observer MQTT
   // Power setting
   uint8_t powersaving_enabled = 0; // boolean
   // Gps settings
@@ -225,6 +226,7 @@ private:
       def("pass", _parent->wormhole_password, sizeof(_parent->wormhole_password));
       def("pub", _parent->wormhole_pub_topic, sizeof(_parent->wormhole_pub_topic));
       def("sub", _parent->wormhole_sub_topic, sizeof(_parent->wormhole_sub_topic));
+      def("to_pub", _parent->wormhole_relay_to_public);
     }
   public:
     WormholePrefs(NodePrefs* parent) : _parent(parent) { }
