@@ -38,33 +38,6 @@ size_t copyOut3(const char* a, const char* b, const char* c, char* out, size_t o
   return len;
 }
 
-enum class RoomPrefix { kNone, kValid, kInvalid };
-
-// Se 'args' comincia con un token puramente numerico isolato (seguito da
-// spazio o fine stringa), lo interpreta sempre come un id di stanza — valido
-// (consuma il token, avanza 'args') o non valido (kInvalid, 'args' lasciato
-// invariato ma il chiamante deve comunque segnalare l'errore, senza provare
-// a interpretare il resto come testo). Se il primo carattere non e' una
-// cifra, ritorna kNone e lascia 'args' invariato: e' testo libero. Nota:
-// un post che dovesse iniziare con un numero isolato (es. "42 gradi oggi")
-// va quindi scritto diversamente (es. "oggi ci sono 42 gradi") — limite
-// noto e accettato di questa sintassi compatta.
-RoomPrefix consumeOptionalRoomId(const RoomRegistry& registry, const char*& args, uint8_t& room_id) {
-  if (args[0] < '0' || args[0] > '9') return RoomPrefix::kNone;
-  const char* p = args;
-  uint32_t v = 0;
-  while (*p >= '0' && *p <= '9') {
-    v = v * 10 + (uint32_t)(*p - '0');
-    p++;
-  }
-  if (*p != ' ' && *p != 0) return RoomPrefix::kNone; // non e' un token numerico isolato
-  if (v >= BBS_MAX_ROOMS || registry.findRoom((uint8_t)v) == nullptr) return RoomPrefix::kInvalid;
-  while (*p == ' ') p++;
-  room_id = (uint8_t)v;
-  args = p;
-  return RoomPrefix::kValid;
-}
-
 size_t handleRooms(CommandContext& ctx, UserId uid, char* out, size_t out_cap) {
   size_t len = 0;
   size_t n_rooms = ctx.room_registry.count();
@@ -89,32 +62,29 @@ size_t handleRooms(CommandContext& ctx, UserId uid, char* out, size_t out_cap) {
   return len;
 }
 
-size_t handlePost(CommandContext& ctx, const char* args, UserId uid, char* out, size_t out_cap) {
-  uint8_t room_id = 0;
-  if (consumeOptionalRoomId(ctx.room_registry, args, room_id) == RoomPrefix::kInvalid) {
-    return copyOut(strings::kInvalidRoom, out, out_cap);
-  }
+// Pubblica 'text' nella stanza corrente dell'utente (handleNew/E, e il
+// testo libero senza comando riconosciuto, vedi processCommand).
+size_t postToCurrentRoom(CommandContext& ctx, const char* text, UserId uid, char* out, size_t out_cap) {
+  uint8_t room_id = ctx.users.getCurrentRoom(uid);
+  if (room_id == kNoRoom) return copyOut(strings::kNoRoomSelected, out, out_cap);
   const RoomInfo* room = ctx.room_registry.findRoom(room_id);
   if (!room) return copyOut(strings::kInvalidRoom, out, out_cap);
-  if (args[0] == 0) return copyOut(strings::kPostEmptyText, out, out_cap);
+  if (text[0] == 0) return copyOut(strings::kPostEmptyText, out, out_cap);
 
   if (ctx.users.isMuted(uid)) return copyOut(strings::kMutedCannotPost, out, out_cap);
   if (ctx.rooms.isClosed(room_id)) return copyOut(strings::kRoomClosed, out, out_cap);
   if (!ctx.sessions.allowMessage(uid, ctx.now_ts)) return copyOut(strings::kRateLimited, out, out_cap);
 
-  if (!ctx.posts.appendPost(room_id, uid, ctx.now_ts, args)) {
+  if (!ctx.posts.appendPost(room_id, uid, ctx.now_ts, text)) {
     return copyOut(strings::kPostEmptyText, out, out_cap);
   }
-  ctx.notifier.onNewPost(room_id, uid, ctx.now_ts);
   ctx.posts.enforceRetention(room_id, BBS_MAX_POSTS_PER_ROOM);
   return copyOut2(strings::kPostOkPrefix, room->name, out, out_cap);
 }
 
-size_t handleNew(CommandContext& ctx, const char* args, UserId uid, char* out, size_t out_cap) {
-  uint8_t room_id = 0;
-  if (consumeOptionalRoomId(ctx.room_registry, args, room_id) == RoomPrefix::kInvalid) {
-    return copyOut(strings::kInvalidRoom, out, out_cap);
-  }
+size_t handleNew(CommandContext& ctx, UserId uid, char* out, size_t out_cap) {
+  uint8_t room_id = ctx.users.getCurrentRoom(uid);
+  if (room_id == kNoRoom) return copyOut(strings::kNoRoomSelected, out, out_cap);
   const RoomInfo* room = ctx.room_registry.findRoom(room_id);
   if (!room) return copyOut(strings::kInvalidRoom, out, out_cap);
 
@@ -188,33 +158,39 @@ bool parseRoomIdArg(const RoomRegistry& registry, const char* args, uint8_t& roo
   return true;
 }
 
-// Come parseRoomIdArg, ma avanza 'args' oltre l'id e gli spazi seguenti
-// (serve a SEARCH, che ha un argomento in piu' dopo la stanza).
-bool parseRoomIdArgAdvance(const RoomRegistry& registry, const char*& args, uint8_t& room_id) {
-  if (args[0] < '0' || args[0] > '9') return false;
-  const char* p = args;
-  uint32_t v = 0;
-  while (*p >= '0' && *p <= '9') {
-    v = v * 10 + (uint32_t)(*p - '0');
-    p++;
-  }
-  if (*p != 0 && *p != ' ') return false;
-  if (v >= BBS_MAX_ROOMS || registry.findRoom((uint8_t)v) == nullptr) return false;
-  while (*p == ' ') p++;
-  room_id = (uint8_t)v;
-  args = p;
-  return true;
-}
-
-size_t handleSubscribe(CommandContext& ctx, const char* args, UserId uid, bool subscribe, char* out,
-                        size_t out_cap) {
+size_t handleJoinRoom(CommandContext& ctx, const char* args, UserId uid, char* out, size_t out_cap) {
   uint8_t room_id;
   if (!parseRoomIdArg(ctx.room_registry, args, room_id)) {
     return copyOut(strings::kInvalidRoom, out, out_cap);
   }
-  ctx.users.setSubscribed(uid, room_id, subscribe);
+  ctx.users.setCurrentRoom(uid, room_id);
   const RoomInfo* room = ctx.room_registry.findRoom(room_id);
-  return copyOut2(subscribe ? strings::kSubscribedPrefix : strings::kUnsubscribedPrefix, room->name, out, out_cap);
+
+  size_t len = copyOut2(strings::kJoinedRoomPrefix, room->name, out, out_cap);
+
+  PostRecord pinned;
+  if (ctx.posts.findPinned(room_id, pinned)) {
+    char author[BBS_NICK_LEN];
+    if (!ctx.users.getNickname(pinned.user_id, author, sizeof(author))) {
+      strncpy(author, "???", sizeof(author));
+      author[sizeof(author) - 1] = 0;
+    }
+    if (len + 1 < out_cap) out[len++] = '\n';
+    for (const char* p = strings::kPinnedInline; *p != 0 && len + 1 < out_cap; p++) out[len++] = *p;
+    for (const char* p = author; *p != 0 && len + 1 < out_cap; p++) out[len++] = *p;
+    for (const char* p = ": "; *p != 0 && len + 1 < out_cap; p++) out[len++] = *p;
+    for (const char* p = pinned.text; *p != 0 && len + 1 < out_cap; p++) out[len++] = *p;
+  }
+  out[len] = 0;
+  return len;
+}
+
+size_t handleLeaveRoom(CommandContext& ctx, UserId uid, char* out, size_t out_cap) {
+  uint8_t room_id = ctx.users.getCurrentRoom(uid);
+  if (room_id == kNoRoom) return copyOut(strings::kNotInAnyRoom, out, out_cap);
+  const RoomInfo* room = ctx.room_registry.findRoom(room_id);
+  ctx.users.setCurrentRoom(uid, kNoRoom);
+  return copyOut2(strings::kLeftRoomPrefix, room ? room->name : "?", out, out_cap);
 }
 
 // --- Fase 3: ruoli, moderazione, anti-abuso ---
@@ -327,11 +303,9 @@ size_t handleUnpinCmd(CommandContext& ctx, const char* args, UserId actor, char*
   return copyOut2(strings::kUnpinOkPrefix, ctx.room_registry.findRoom(room_id)->name, out, out_cap);
 }
 
-size_t handlePinnedCmd(CommandContext& ctx, const char* args, char* out, size_t out_cap) {
-  uint8_t room_id = 0;
-  if (consumeOptionalRoomId(ctx.room_registry, args, room_id) == RoomPrefix::kInvalid) {
-    return copyOut(strings::kInvalidRoom, out, out_cap);
-  }
+size_t handlePinnedCmd(CommandContext& ctx, UserId uid, char* out, size_t out_cap) {
+  uint8_t room_id = ctx.users.getCurrentRoom(uid);
+  if (room_id == kNoRoom) return copyOut(strings::kNoRoomSelected, out, out_cap);
   const RoomInfo* room = ctx.room_registry.findRoom(room_id);
   if (!room) return copyOut(strings::kInvalidRoom, out, out_cap);
 
@@ -409,9 +383,9 @@ size_t handleStats(CommandContext& ctx, char* out, size_t out_cap) {
   return copyOut(buf, out, out_cap);
 }
 
-size_t handleSearch(CommandContext& ctx, const char* args, char* out, size_t out_cap) {
-  uint8_t room_id;
-  if (!parseRoomIdArgAdvance(ctx.room_registry, args, room_id)) return copyOut(strings::kInvalidRoom, out, out_cap);
+size_t handleSearch(CommandContext& ctx, const char* args, UserId uid, char* out, size_t out_cap) {
+  uint8_t room_id = ctx.users.getCurrentRoom(uid);
+  if (room_id == kNoRoom) return copyOut(strings::kNoRoomSelected, out, out_cap);
   if (args[0] == 0) return copyOut(strings::kSearchEmptyKeyword, out, out_cap);
 
   char keyword[BBS_MAX_TEXT_LEN + 1];
@@ -534,11 +508,9 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
     }
 
     uint32_t unread_posts = 0;
-    for (size_t i = 0; i < ctx.room_registry.count(); i++) {
-      uint8_t room_id = ctx.room_registry.at(i).id;
-      if (ctx.users.isSubscribed(uid, room_id)) {
-        unread_posts += ctx.posts.countUnread(room_id, ctx.users.getLastRead(uid, room_id));
-      }
+    uint8_t current_room = ctx.users.getCurrentRoom(uid);
+    if (current_room != kNoRoom) {
+      unread_posts = ctx.posts.countUnread(current_room, ctx.users.getLastRead(uid, current_room));
     }
     uint32_t unread_mail = ctx.mail.countUnread(uid, ctx.users.getLastMailRead(uid));
 
@@ -561,11 +533,11 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
   }
 
   if (strcmp(cmd, "E") == 0) {
-    return handlePost(ctx, args, uid, out, out_cap);
+    return postToCurrentRoom(ctx, args, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "N") == 0) {
-    return handleNew(ctx, args, uid, out, out_cap);
+    return handleNew(ctx, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "M") == 0) {
@@ -573,11 +545,11 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
   }
 
   if (strcmp(cmd, "S") == 0) {
-    return handleSubscribe(ctx, args, uid, true, out, out_cap);
+    return handleJoinRoom(ctx, args, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "U") == 0) {
-    return handleSubscribe(ctx, args, uid, false, out, out_cap);
+    return handleLeaveRoom(ctx, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "BAN") == 0) {
@@ -617,7 +589,7 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
   }
 
   if (strcmp(cmd, "PINNED") == 0) {
-    return handlePinnedCmd(ctx, args, out, out_cap);
+    return handlePinnedCmd(ctx, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "ROOM") == 0) {
@@ -653,14 +625,18 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
   }
 
   if (strcmp(cmd, "SEARCH") == 0) {
-    return handleSearch(ctx, args, out, out_cap);
+    return handleSearch(ctx, args, uid, out, out_cap);
   }
 
   if (strcmp(cmd, "MOTD") == 0) {
     return handleMotdCmd(ctx, args, uid, out, out_cap);
   }
 
-  return copyOut(strings::kUnknownPostRegister, out, out_cap);
+  // Nessun comando riconosciuto: testo libero, trattato come post nella
+  // stanza corrente (vedi postToCurrentRoom). Usa 'input' per intero, non
+  // 'args': il primo token non e' un prefisso da scartare, fa parte del
+  // messaggio (es. "ciao a tutti" non deve perdere "ciao").
+  return postToCurrentRoom(ctx, input, uid, out, out_cap);
 }
 
 } // namespace bbs

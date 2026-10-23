@@ -38,15 +38,17 @@ public:
   uint32_t getLastMailRead(UserId id) const;
   bool setLastMailRead(UserId id, uint32_t timestamp);
 
-  // Iscrizione alle stanze (persistita nel record utente). Di default, alla
-  // registrazione, solo le stanze principali (bbs_room_registry.h).
-  bool isSubscribed(UserId id, uint8_t room_id) const;
-  bool setSubscribed(UserId id, uint8_t room_id, bool subscribed);
+  // Stanza corrente dell'utente (persistita nel record utente): al piu' una
+  // alla volta, kNoRoom se non e' in nessuna stanza. Di default, alla
+  // registrazione, la stanza principale (bbs_room_registry.h).
+  uint8_t getCurrentRoom(UserId id) const;
+  bool setCurrentRoom(UserId id, uint8_t room_id);  // room_id puo' essere kNoRoom (= uscire)
 
-  // Stanze dinamiche (Fase 5): azzera per TUTTI gli utenti il bit di
-  // iscrizione e il puntatore last_read di room_id. Da chiamare quando una
-  // stanza viene cancellata dal registro, cosi' un id riassegnato a una
-  // stanza futura non eredita iscrizioni/puntatori della stanza precedente.
+  // Stanze dinamiche (Fase 5): per TUTTI gli utenti con current_room ==
+  // room_id, riporta a kNoRoom (e azzera il puntatore last_read di
+  // room_id). Da chiamare quando una stanza viene cancellata dal registro,
+  // cosi' un id riassegnato a una stanza futura non eredita lo stato della
+  // stanza precedente.
   bool clearRoomForAllUsers(uint8_t room_id);
 
   // Ruoli (Fase 3). Il primo utente mai registrato in questo archivio

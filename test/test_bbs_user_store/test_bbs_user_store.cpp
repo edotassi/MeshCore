@@ -108,19 +108,17 @@ TEST(BbsUserStore, NicknameBoundary15CharsOk16Fails) {
   EXPECT_EQ(store.registerUser(key2, "abcdefghij123456", 100, id2), RegisterResult::INVALID_NICKNAME);  // 16 char
 }
 
-TEST(BbsUserStore, DefaultSubscriptionsOnRegister) {
+TEST(BbsUserStore, DefaultRoomOnRegister) {
   FakeFileSystem fs;
   UserStore store(fs);
   uint8_t key[BBS_PUBKEY_LEN];
   makeKey(key, 20);
   UserId id;
   ASSERT_EQ(store.registerUser(key, "gino", 100, id), RegisterResult::OK);
-  EXPECT_TRUE(store.isSubscribed(id, 0));   // Generale: di default
-  EXPECT_TRUE(store.isSubscribed(id, 1));   // Annunci: di default
-  EXPECT_FALSE(store.isSubscribed(id, 2));  // Tecnico: opt-in
+  EXPECT_EQ(store.getCurrentRoom(id), 0u);  // Generale: stanza di default
 }
 
-TEST(BbsUserStore, SubscribeUnsubscribePersistAcrossReopen) {
+TEST(BbsUserStore, CurrentRoomPersistsAcrossReopen) {
   FakeFileSystem fs;
   uint8_t key[BBS_PUBKEY_LEN];
   makeKey(key, 21);
@@ -128,26 +126,34 @@ TEST(BbsUserStore, SubscribeUnsubscribePersistAcrossReopen) {
   {
     UserStore store(fs);
     ASSERT_EQ(store.registerUser(key, "lara", 100, id), RegisterResult::OK);
-    ASSERT_TRUE(store.setSubscribed(id, 2, true));
-    ASSERT_TRUE(store.setSubscribed(id, 0, false));
+    ASSERT_TRUE(store.setCurrentRoom(id, 2));
   }
   {
     UserStore store2(fs);
-    EXPECT_TRUE(store2.isSubscribed(id, 2));
-    EXPECT_FALSE(store2.isSubscribed(id, 0));
-    EXPECT_TRUE(store2.isSubscribed(id, 1));  // invariata
+    EXPECT_EQ(store2.getCurrentRoom(id), 2u);
   }
 }
 
-TEST(BbsUserStore, SubscribeInvalidRoomIdFails) {
+TEST(BbsUserStore, SetCurrentRoomToNoRoomMeansNotInAnyRoom) {
+  FakeFileSystem fs;
+  UserStore store(fs);
+  uint8_t key[BBS_PUBKEY_LEN];
+  makeKey(key, 24);
+  UserId id;
+  ASSERT_EQ(store.registerUser(key, "uscito", 100, id), RegisterResult::OK);
+  ASSERT_TRUE(store.setCurrentRoom(id, kNoRoom));
+  EXPECT_EQ(store.getCurrentRoom(id), kNoRoom);
+}
+
+TEST(BbsUserStore, SetCurrentRoomInvalidRoomIdFails) {
   FakeFileSystem fs;
   UserStore store(fs);
   uint8_t key[BBS_PUBKEY_LEN];
   makeKey(key, 22);
   UserId id;
   ASSERT_EQ(store.registerUser(key, "nico", 100, id), RegisterResult::OK);
-  EXPECT_FALSE(store.setSubscribed(id, BBS_MAX_ROOMS, true));
-  EXPECT_FALSE(store.isSubscribed(id, BBS_MAX_ROOMS));
+  EXPECT_FALSE(store.setCurrentRoom(id, BBS_MAX_ROOMS));
+  EXPECT_EQ(store.getCurrentRoom(id), 0u);  // invariata: ancora quella di default
 }
 
 TEST(BbsUserStore, FindByNicknameWorks) {

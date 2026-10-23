@@ -109,17 +109,32 @@ void MyMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
   }
 }
 
-bool MyMesh::sendBbsReply(ClientInfo *client, const uint8_t *text, size_t text_len) {
-  if (text_len + 5 > sizeof(reply_data)) return false;  // difesa, non dovrebbe mai accadere
+bool MyMesh::sendBbsAuthoredReply(ClientInfo *client, const uint8_t author_pub_key[32], const uint8_t *text,
+                                   size_t text_len) {
+  if (text_len + 9 > sizeof(reply_data)) return false;  // 4 timestamp + 1 tipo + 4 prefisso autore
 
-  // Stesso framing usato in onPeerDataRecv per le risposte sincrone: 4 byte
-  // di timestamp + 1 byte tipo/attempt + testo (vedi anche pushPostToClient).
+  // Stesso framing timestamp+tipo usato per le risposte sincrone in
+  // onPeerDataRecv, ma con TXT_TYPE_SIGNED_PLAIN e il prefisso della
+  // chiave pubblica dell'autore originale (vedi pushPostToClient, da cui
+  // questo schema e' preso) al posto del tipo "plain" semplice: e' cosi'
+  // che il client del destinatario sa attribuire il messaggio al vero
+  // autore invece che alla BBS.
   uint32_t now = getRTCClock()->getCurrentTimeUnique();
-  memcpy(reply_data, &now, 4);
-  reply_data[4] = (TXT_TYPE_PLAIN << 2);
-  memcpy(&reply_data[5], text, text_len);
+  size_t len = 0;
+  memcpy(&reply_data[len], &now, 4);
+  len += 4;
 
-  auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, 5 + text_len);
+  uint8_t attempt;
+  getRNG()->random(&attempt, 1);
+  reply_data[len++] = (TXT_TYPE_SIGNED_PLAIN << 2) | (attempt & 3);
+
+  memcpy(&reply_data[len], author_pub_key, 4);  // solo il prefisso, non la chiave intera
+  len += 4;
+
+  memcpy(&reply_data[len], text, text_len);
+  len += text_len;
+
+  auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, len);
   if (!reply) return false;
   if (client->out_path_len == OUT_PATH_UNKNOWN) {
     sendFloodScoped(default_scope, reply, 0, _prefs.path_hash_mode + 1);

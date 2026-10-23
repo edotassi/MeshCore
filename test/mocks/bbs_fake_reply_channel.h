@@ -14,18 +14,22 @@ class FakeReplyChannel : public bbs::IReplyChannel {
 public:
   struct Sent {
     uint8_t pub_key[bbs::BBS_PUBKEY_LEN];
+    uint8_t author_pub_key[bbs::BBS_PUBKEY_LEN];
     std::string text;
   };
 
   bool fail_next = false;  // per simulare un mancato recapito nel prossimo invio
 
-  bool sendReply(const uint8_t pub_key[bbs::BBS_PUBKEY_LEN], const uint8_t* payload, size_t len) override {
+  bool sendAuthoredReply(const uint8_t pub_key[bbs::BBS_PUBKEY_LEN],
+                          const uint8_t author_pub_key[bbs::BBS_PUBKEY_LEN], const uint8_t* payload,
+                          size_t len) override {
     if (fail_next) {
       fail_next = false;
       return false;
     }
     Sent s;
     memcpy(s.pub_key, pub_key, bbs::BBS_PUBKEY_LEN);
+    memcpy(s.author_pub_key, author_pub_key, bbs::BBS_PUBKEY_LEN);
     s.text.assign((const char*)payload, len);
     sent.push_back(s);
     return true;

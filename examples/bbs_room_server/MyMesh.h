@@ -292,14 +292,20 @@ public:
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void loop();
 
-  // I due soli metodi pubblici che lo strato di adattamento della BBS
+  // I soli metodi pubblici che lo strato di adattamento della BBS
   // (lib/bbs_port/) chiama su MyMesh: tutto il codice che tocca le API
-  // MeshCore per notifiche asincrone (invio + lookup del client) resta
-  // qui. sendBbsReply applica lo stesso framing (timestamp+tipo) usato
-  // dalle risposte sincrone in onPeerDataRecv, poi sceglie tra
-  // instradamento diretto e flood scoped (pattern di pushPostToClient).
-  // Usati dal Notifier (Fase 2, notifiche brevi di post nuovi) tramite
+  // MeshCore per il push asincrono (invio + lookup del client) resta qui.
+  // sendBbsAuthoredReply applica lo stesso framing (timestamp+tipo) usato
+  // dalle risposte sincrone in onPeerDataRecv, ma in formato "signed
+  // plain text" (TXT_TYPE_SIGNED_PLAIN): il testo e' preceduto dal
+  // prefisso a 4 byte della chiave pubblica dell'autore originale del
+  // post, cosi' il client del destinatario attribuisce il messaggio al
+  // vero autore invece che alla BBS (vedi "Group text message"/signed
+  // plain text in docs/payloads.md), poi sceglie tra instradamento
+  // diretto e flood scoped (pattern di pushPostToClient). Usato dal
+  // Notifier (push dei post, lib/bbs/bbs_notifier.cpp) tramite
   // MyMeshReplyChannel (lib/bbs_port/bbs_port_reply_channel.h).
-  bool sendBbsReply(ClientInfo* client, const uint8_t* text, size_t text_len);
+  bool sendBbsAuthoredReply(ClientInfo* client, const uint8_t author_pub_key[32], const uint8_t* text,
+                            size_t text_len);
   ClientInfo* getBbsClient(const uint8_t* pub_key);
 };

@@ -67,42 +67,6 @@ TEST(BbsSessionTable, EvictsLeastRecentlyActiveWhenFull) {
   EXPECT_TRUE(table.isActive(1, 1001));  // il resto e' rimasto
 }
 
-TEST(BbsSessionTable, NoPendingInitially) {
-  SessionTable table;
-  table.touch(1, 1000);
-  EXPECT_FALSE(table.hasPendingReadyToFlush(1, 0, 1000 + BBS_NOTIFY_BATCH_WINDOW_SECS));
-  EXPECT_EQ(table.consumePending(1, 0), 0u);
-}
-
-TEST(BbsSessionTable, PendingNotReadyBeforeWindowElapses) {
-  SessionTable table;
-  table.touch(1, 1000);
-  table.addPendingPost(1, 0, 1000);
-  EXPECT_FALSE(table.hasPendingReadyToFlush(1, 0, 1000 + BBS_NOTIFY_BATCH_WINDOW_SECS - 1));
-  EXPECT_TRUE(table.hasPendingReadyToFlush(1, 0, 1000 + BBS_NOTIFY_BATCH_WINDOW_SECS));
-}
-
-TEST(BbsSessionTable, MultiplePostsAccumulateIntoOneCount) {
-  SessionTable table;
-  table.touch(1, 1000);
-  table.addPendingPost(1, 0, 1000);
-  table.addPendingPost(1, 0, 1010);
-  table.addPendingPost(1, 0, 1020);
-  // la finestra parte dal PRIMO post in sospeso, non dall'ultimo.
-  EXPECT_FALSE(table.hasPendingReadyToFlush(1, 0, 1000 + BBS_NOTIFY_BATCH_WINDOW_SECS - 1));
-  ASSERT_TRUE(table.hasPendingReadyToFlush(1, 0, 1000 + BBS_NOTIFY_BATCH_WINDOW_SECS));
-  EXPECT_EQ(table.consumePending(1, 0), 3u);
-  EXPECT_EQ(table.consumePending(1, 0), 0u);  // consumato, non si ripete
-}
-
-TEST(BbsSessionTable, PendingIsPerRoom) {
-  SessionTable table;
-  table.touch(1, 1000);
-  table.addPendingPost(1, 0, 1000);
-  EXPECT_EQ(table.consumePending(1, 1), 0u);
-  EXPECT_EQ(table.consumePending(1, 0), 1u);
-}
-
 TEST(BbsSessionTable, ReachableByDefaultThenUnreachableAfterMissedDeliveries) {
   SessionTable table;
   table.touch(1, 1000);

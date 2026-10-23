@@ -45,11 +45,6 @@ constexpr size_t BBS_MAX_SESSIONS = 32;
 // dal piano originale.
 constexpr uint32_t BBS_SESSION_TIMEOUT_SECS = 2400;
 
-// Le notifiche di post nuovi si accorpano: un post in sospeso per una
-// stanza aspetta questa finestra prima di essere inviato (nel frattempo
-// altri post nella stessa stanza si accumulano nello stesso avviso).
-constexpr uint32_t BBS_NOTIFY_BATCH_WINDOW_SECS = 120;
-
 // Dopo questi mancati recapiti consecutivi, l'utente passa "offline" e non
 // riceve piu' notifiche finche' non contatta di nuovo la BBS (qualunque
 // comando azzera il contatore, vedi SessionTable::touch).

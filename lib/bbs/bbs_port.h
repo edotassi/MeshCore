@@ -43,14 +43,19 @@ public:
 };
 
 // Invio asincrono a un utente identificato dalla sua chiave pubblica (non
-// dal contesto di un messaggio in arrivo): usato dal Notifier per le
-// notifiche di post nuovi. Ritorna false se il peer non e' raggiungibile
-// (es. mai visto, o evitto dall'ACL) — il chiamante lo conta come mancato
-// recapito (vedi SessionTable::recordDeliveryFailure).
+// dal contesto di un messaggio in arrivo): usato dal Notifier per il push
+// dei post. 'author_pub_key' e' la chiave completa (BBS_PUBKEY_LEN byte)
+// dell'autore originale del post, non del destinatario: il formato di
+// trasporto ne incorpora un prefisso cosi' il client del destinatario
+// attribuisce il messaggio al vero autore invece che alla BBS (vedi
+// "signed plain text" in docs/payloads.md). Ritorna false se il peer non
+// e' raggiungibile (es. mai visto, o evitto dall'ACL) — il chiamante lo
+// conta come mancato recapito (vedi SessionTable::recordDeliveryFailure).
 class IReplyChannel {
 public:
   virtual ~IReplyChannel() = default;
-  virtual bool sendReply(const uint8_t pub_key[BBS_PUBKEY_LEN], const uint8_t* payload, size_t len) = 0;
+  virtual bool sendAuthoredReply(const uint8_t pub_key[BBS_PUBKEY_LEN], const uint8_t author_pub_key[BBS_PUBKEY_LEN],
+                                  const uint8_t* payload, size_t len) = 0;
 };
 
 } // namespace bbs

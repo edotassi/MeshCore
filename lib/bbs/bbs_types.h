@@ -9,6 +9,10 @@ namespace bbs {
 using UserId = uint32_t;
 constexpr UserId kInvalidUserId = 0xFFFFFFFFu;
 
+// Valore di UserRecord::current_room quando l'utente non e' "dentro" a
+// nessuna stanza (stato iniziale prima del primo S, o dopo U).
+constexpr uint8_t kNoRoom = 0xFF;
+
 enum UserRole : uint8_t {
   ROLE_USER = 0,
   ROLE_MODERATOR = 1,
@@ -59,7 +63,7 @@ struct UserRecord {
   uint32_t last_login_ts;
   uint32_t last_read[BBS_MAX_ROOMS];
   uint32_t last_mail_read_seq;
-  uint8_t  subscribed_rooms;  // bitmask: bit room_id = iscritto a quella stanza (vedi bbs_room_registry.h)
+  uint8_t  current_room;  // kNoRoom se l'utente non e' in nessuna stanza (vedi bbs_room_registry.h)
   uint8_t  reserved[9];
 };
 

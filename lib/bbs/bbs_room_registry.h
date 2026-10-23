@@ -16,13 +16,10 @@ struct RoomInfo {
 enum class AddRoomResult { OK, FULL, INVALID_NAME, DUPLICATE_NAME, IO_ERROR };
 enum class RemoveRoomResult { OK, NOT_FOUND, IO_ERROR };
 
-// Iscrizione di default alla registrazione: solo le due stanze storiche
-// principali (Generale=0, Annunci=1); il resto (Tecnico e qualunque stanza
-// aggiunta con ROOM ADD) e' sempre opt-in con S. Resta una costante di
-// compilazione anche ora che l'elenco e' dinamico: e' una scelta di
-// prodotto ("a cosa si iscrive un utente nuovo"), non una proprieta' della
-// singola stanza da poter configurare per-stanza.
-constexpr uint8_t kDefaultSubscribedMask = (1u << 0) | (1u << 1);
+// Stanza in cui si trova di default un utente appena registrato (Generale).
+// Resta una costante di compilazione anche ora che l'elenco e' dinamico: e'
+// una scelta di prodotto, non una proprieta' della singola stanza.
+constexpr uint8_t kDefaultRoomId = 0;
 
 // Elenco delle stanze attive (Fase 5, "Configurazione"): non piu' un array
 // costante a compile-time, ma un piccolo registro persistito su file (stesso

@@ -6,12 +6,10 @@
 
 #include "bbs_command_parser.h"
 #include "bbs_fake_filesystem.h"
-#include "bbs_fake_reply_channel.h"
 #include "bbs_strings_it.h"
 
 using namespace bbs;
 using bbs_test::FakeFileSystem;
-using bbs_test::FakeReplyChannel;
 
 namespace {
 
@@ -26,16 +24,13 @@ struct Fixture {
   PostStore posts{fs};
   MailStore mail{fs};
   SessionTable sessions;
-  FakeReplyChannel reply;
   RoomRegistry room_registry{fs};
-  Notifier notifier{users, sessions, room_registry, reply};
   RoomState rooms{fs};
   ModLog modlog;
   MotdStore motd{fs};
 
   std::string run(const uint8_t* pub_key, const char* input, uint32_t now_ts = 1000) {
-    CommandContext ctx{users,    welcome, posts, mail,          sessions,
-                        notifier, rooms,   room_registry, modlog, motd, pub_key, now_ts};
+    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, pub_key, now_ts};
     char out[256];
     size_t n = processCommand(ctx, input, out, sizeof(out));
     return std::string(out, n);
@@ -78,16 +73,17 @@ TEST(BbsCommandParser, RegisterThenLoginWorks) {
   EXPECT_EQ(f.run(key, "LOGIN"), std::string(expected));
 }
 
-TEST(BbsCommandParser, LoginReportsUnreadCountsForSubscribedRoomsAndMail) {
+TEST(BbsCommandParser, LoginReportsUnreadCountsForCurrentRoomAndMail) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
   makeKey(author, 30);
   makeKey(reader, 31);
   f.run(author, "REGISTER pina");
-  f.run(reader, "REGISTER remo");  // iscritto di default a Generale (0) e Annunci (1)
+  f.run(reader, "REGISTER remo");  // entrambi in Generale (0) di default
 
-  f.run(author, "E ciao", 100);          // in Generale (0), sottoscritta di default
-  f.run(author, "E 2 tecnico", 101);     // in Tecnico (2), NON sottoscritta di default
+  f.run(author, "E ciao", 100);           // in Generale: remo lo conta
+  f.run(author, "S 2");                   // l'autore si sposta in Tecnico
+  f.run(author, "E tecnico", 101);        // in Tecnico: remo (restato in Generale) non lo conta
   f.run(author, "M remo ciao privato", 102);
 
   char expected[64];
@@ -95,7 +91,7 @@ TEST(BbsCommandParser, LoginReportsUnreadCountsForSubscribedRoomsAndMail) {
   EXPECT_EQ(f.run(reader, "LOGIN", 200), std::string(expected));
 }
 
-TEST(BbsCommandParser, SubscribeThenLoginCountsTheNewRoomToo) {
+TEST(BbsCommandParser, JoiningAnotherRoomCountsThatRoomInstead) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
   makeKey(author, 32);
@@ -104,31 +100,41 @@ TEST(BbsCommandParser, SubscribeThenLoginCountsTheNewRoomToo) {
   f.run(reader, "REGISTER due");
 
   auto sub = f.run(reader, "S 2");
-  EXPECT_EQ(sub, std::string(strings::kSubscribedPrefix) + "Tecnico");
+  EXPECT_EQ(sub, std::string(strings::kJoinedRoomPrefix) + "Tecnico");
 
-  f.run(author, "E 2 novita' tecniche", 100);
+  f.run(author, "S 2");
+  f.run(author, "E novita' tecniche", 100);
 
   char expected[64];
   snprintf(expected, sizeof(expected), strings::kLoginWelcomeBackFmt, 1u, 0u);
   EXPECT_EQ(f.run(reader, "LOGIN", 200), std::string(expected));
 }
 
-TEST(BbsCommandParser, UnsubscribeStopsCountingThatRoom) {
+TEST(BbsCommandParser, LeavingTheRoomStopsCountingUnread) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
   makeKey(author, 34);
   makeKey(reader, 35);
   f.run(author, "REGISTER tre");
-  f.run(reader, "REGISTER quattro");  // iscritto di default a 0 e 1
+  f.run(reader, "REGISTER quattro");  // in Generale (0) di default
 
-  auto unsub = f.run(reader, "U 1");
-  EXPECT_EQ(unsub, std::string(strings::kUnsubscribedPrefix) + "Annunci");
+  auto unsub = f.run(reader, "U");
+  EXPECT_EQ(unsub, std::string(strings::kLeftRoomPrefix) + "Generale");
 
-  f.run(author, "E 1 annuncio", 100);
+  f.run(author, "E annuncio", 100);  // ancora in Generale
 
   char expected[64];
   snprintf(expected, sizeof(expected), strings::kLoginWelcomeBackFmt, 0u, 0u);
   EXPECT_EQ(f.run(reader, "LOGIN", 200), std::string(expected));
+}
+
+TEST(BbsCommandParser, LeavingWithoutBeingInARoomReportsIt) {
+  Fixture f;
+  uint8_t key[BBS_PUBKEY_LEN];
+  makeKey(key, 37);
+  f.run(key, "REGISTER settimo");
+  f.run(key, "U");
+  EXPECT_EQ(f.run(key, "U"), std::string(strings::kNotInAnyRoom));
 }
 
 TEST(BbsCommandParser, SubscribeInvalidRoomRejected) {
@@ -164,18 +170,29 @@ TEST(BbsCommandParser, LogoutAfterRegisterAcks) {
   EXPECT_EQ(f.run(key, "LOGOUT"), std::string(strings::kLogoutAck));
 }
 
-TEST(BbsCommandParser, UnknownCommandAfterRegistration) {
+TEST(BbsCommandParser, UnknownWordIsPostedToCurrentRoom) {
+  // Senza un comando riconosciuto, il testo libero e' trattato come un
+  // post nella stanza corrente (qui Generale, quella di default).
   Fixture f;
   uint8_t key[BBS_PUBKEY_LEN];
   makeKey(key, 8);
   f.run(key, "REGISTER carla");
-  EXPECT_EQ(f.run(key, "XYZ"), std::string(strings::kUnknownPostRegister));
+  EXPECT_EQ(f.run(key, "XYZ"), std::string(strings::kPostOkPrefix) + "Generale");
+}
+
+TEST(BbsCommandParser, FreeTextWithoutACurrentRoomReportsIt) {
+  Fixture f;
+  uint8_t key[BBS_PUBKEY_LEN];
+  makeKey(key, 9);
+  f.run(key, "REGISTER dado");
+  f.run(key, "U");
+  EXPECT_EQ(f.run(key, "ciao a tutti"), std::string(strings::kNoRoomSelected));
 }
 
 TEST(BbsCommandParser, HelpAfterRegistrationIsFull) {
   Fixture f;
   uint8_t key[BBS_PUBKEY_LEN];
-  makeKey(key, 9);
+  makeKey(key, 10);
   f.run(key, "REGISTER dino");
   EXPECT_EQ(f.run(key, "H"), std::string(strings::kHelpPostRegister));
 }
@@ -183,7 +200,7 @@ TEST(BbsCommandParser, HelpAfterRegistrationIsFull) {
 TEST(BbsCommandParser, RoomsListsAllActiveRooms) {
   Fixture f;
   uint8_t key[BBS_PUBKEY_LEN];
-  makeKey(key, 10);
+  makeKey(key, 11);
   f.run(key, "REGISTER eva");
   auto k = f.run(key, "K");
   EXPECT_NE(k.find("0:Generale"), std::string::npos);
@@ -196,13 +213,14 @@ TEST(BbsCommandParser, RoomsShowsUnreadAndTotalPostCountPerRoom) {
   // coincidono sempre, in tutte le stanze.
   Fixture f;
   uint8_t key[BBS_PUBKEY_LEN];
-  makeKey(key, 11);
+  makeKey(key, 12);
   f.run(key, "REGISTER furio");
   EXPECT_EQ(f.run(key, "K"), "0:Generale(0/0)\n1:Annunci(0/0)\n2:Tecnico(0/0)");
 
   f.run(key, "E uno", 100);
   f.run(key, "E due", 200);
-  f.run(key, "E 2 tecnico", 300);
+  f.run(key, "S 2");
+  f.run(key, "E tecnico", 300);
   EXPECT_EQ(f.run(key, "K"), "0:Generale(2/2)\n1:Annunci(0/0)\n2:Tecnico(1/1)");
 
   f.run(key, "DELPOST 0");  // cancellato: non deve piu' contare ne' come letto ne' come totale
@@ -212,8 +230,8 @@ TEST(BbsCommandParser, RoomsShowsUnreadAndTotalPostCountPerRoom) {
 TEST(BbsCommandParser, RoomsUnreadDropsAfterReadingButTotalStaysTheSame) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
-  makeKey(author, 12);
-  makeKey(reader, 13);
+  makeKey(author, 13);
+  makeKey(reader, 14);
   f.run(author, "REGISTER autoreK");
   f.run(reader, "REGISTER lettoreK");
 
@@ -235,8 +253,8 @@ TEST(BbsCommandParser, RoomsUnreadDropsAfterReadingButTotalStaysTheSame) {
 TEST(BbsCommandParser, PostThenReadInDefaultRoom) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
-  makeKey(author, 11);
-  makeKey(reader, 12);
+  makeKey(author, 15);
+  makeKey(reader, 16);
   f.run(author, "REGISTER pino");
   f.run(reader, "REGISTER lina");
 
@@ -250,39 +268,46 @@ TEST(BbsCommandParser, PostThenReadInDefaultRoom) {
   EXPECT_EQ(f.run(reader, "N", 2002), std::string(strings::kNoNewPostsPrefix) + "Generale");
 }
 
-TEST(BbsCommandParser, PostAndReadInExplicitRoom) {
+TEST(BbsCommandParser, PostAndReadAfterJoiningAnotherRoom) {
   Fixture f;
   uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
-  makeKey(author, 13);
-  makeKey(reader, 14);
+  makeKey(author, 17);
+  makeKey(reader, 18);
   f.run(author, "REGISTER gino");
   f.run(reader, "REGISTER sara");
 
-  auto postReply = f.run(author, "E 2 guasto antenna", 3000);
+  f.run(author, "S 2");
+  auto postReply = f.run(author, "E guasto antenna", 3000);
   EXPECT_EQ(postReply, std::string(strings::kPostOkPrefix) + "Tecnico");
 
-  // Nella stanza di default (0) non c'e' nulla di nuovo.
+  // Sara e' ancora in Generale: nulla di nuovo li'.
   EXPECT_EQ(f.run(reader, "N", 3001), std::string(strings::kNoNewPostsPrefix) + "Generale");
-  // Nella stanza 2 (Tecnico) invece si'.
-  EXPECT_EQ(f.run(reader, "N 2", 3002), "gino: guasto antenna");
+  // Entra in Tecnico e lo legge.
+  f.run(reader, "S 2");
+  EXPECT_EQ(f.run(reader, "N", 3002), "gino: guasto antenna");
 }
 
-TEST(BbsCommandParser, InvalidRoomIdRejected) {
+TEST(BbsCommandParser, PostTextThatLooksLikeARoomPrefixIsPostedLiterally) {
+  // Non esiste piu' un prefisso numerico di stanza in E/testo libero: un
+  // messaggio che comincia con un numero isolato viene pubblicato cosi'
+  // com'e', per intero, nella stanza corrente.
   Fixture f;
-  uint8_t key[BBS_PUBKEY_LEN];
-  makeKey(key, 15);
-  f.run(key, "REGISTER remo");
-  EXPECT_EQ(f.run(key, "E 9 testo"), std::string(strings::kInvalidRoom));
-  EXPECT_EQ(f.run(key, "N 9"), std::string(strings::kInvalidRoom));
+  uint8_t author[BBS_PUBKEY_LEN], reader[BBS_PUBKEY_LEN];
+  makeKey(author, 19);
+  makeKey(reader, 20);
+  f.run(author, "REGISTER remo2");
+  f.run(reader, "REGISTER destinatario");
+
+  f.run(author, "E 9 gradi fuori", 100);
+  EXPECT_EQ(f.run(reader, "N", 101), "remo2: 9 gradi fuori");
 }
 
 TEST(BbsCommandParser, EmptyPostTextRejected) {
   Fixture f;
   uint8_t key[BBS_PUBKEY_LEN];
-  makeKey(key, 16);
+  makeKey(key, 21);
   f.run(key, "REGISTER teo");
   EXPECT_EQ(f.run(key, "E"), std::string(strings::kPostEmptyText));
-  EXPECT_EQ(f.run(key, "E 1"), std::string(strings::kPostEmptyText));
 }
 
 TEST(BbsCommandParser, MailSendThenReadByRecipient) {
@@ -567,7 +592,7 @@ TEST(BbsCommandParser, StatsReportsCounts) {
   EXPECT_EQ(f.run(a, "STATS", 1000), std::string(expected));
 }
 
-TEST(BbsCommandParser, SearchFindsPostAcrossUsers) {
+TEST(BbsCommandParser, SearchFindsPostInCurrentRoom) {
   Fixture f;
   uint8_t a[BBS_PUBKEY_LEN], b[BBS_PUBKEY_LEN];
   makeKey(a, 76);
@@ -576,17 +601,19 @@ TEST(BbsCommandParser, SearchFindsPostAcrossUsers) {
   f.run(b, "REGISTER cercatore");
   f.run(a, "E antenna rotta oggi");
 
-  EXPECT_EQ(f.run(b, "SEARCH 0 antenna"), "autoreSe: antenna rotta oggi");
+  EXPECT_EQ(f.run(b, "SEARCH antenna"), "autoreSe: antenna rotta oggi");
 }
 
-TEST(BbsCommandParser, SearchNoMatchOrEmptyKeyword) {
+TEST(BbsCommandParser, SearchNoMatchOrEmptyKeywordOrNoRoom) {
   Fixture f;
   uint8_t a[BBS_PUBKEY_LEN];
   makeKey(a, 78);
   f.run(a, "REGISTER cercatore2");
-  EXPECT_EQ(f.run(a, "SEARCH 0"), std::string(strings::kSearchEmptyKeyword));
-  EXPECT_EQ(f.run(a, "SEARCH 0 introvabile"), std::string(strings::kSearchNoMatch));
-  EXPECT_EQ(f.run(a, "SEARCH 9 qualcosa"), std::string(strings::kInvalidRoom));
+  EXPECT_EQ(f.run(a, "SEARCH"), std::string(strings::kSearchEmptyKeyword));
+  EXPECT_EQ(f.run(a, "SEARCH introvabile"), std::string(strings::kSearchNoMatch));
+
+  f.run(a, "U");
+  EXPECT_EQ(f.run(a, "SEARCH qualcosa"), std::string(strings::kNoRoomSelected));
 }
 
 TEST(BbsCommandParser, MotdNotSetByDefault) {
@@ -671,9 +698,11 @@ TEST(BbsCommandParser, RoomAddByAdminCreatesAUsableRoom) {
 
   EXPECT_EQ(f.run(admin, "ROOM ADD Giardino"), std::string(strings::kRoomAddOkPrefix) + "Giardino");
 
-  // La nuova stanza (id 3) e' subito usabile: post, lettura, iscrizione.
-  EXPECT_EQ(f.run(other, "E 3 ciao a tutti"), std::string(strings::kPostOkPrefix) + "Giardino");
-  EXPECT_EQ(f.run(admin, "N 3"), std::string("mario: ciao a tutti"));
+  // La nuova stanza (id 3) e' subito usabile: ci si entra, si posta, si legge.
+  f.run(other, "S 3");
+  EXPECT_EQ(f.run(other, "E ciao a tutti"), std::string(strings::kPostOkPrefix) + "Giardino");
+  f.run(admin, "S 3");
+  EXPECT_EQ(f.run(admin, "N"), std::string("mario: ciao a tutti"));
 }
 
 TEST(BbsCommandParser, RoomAddByPlainUserIsDenied) {
@@ -705,18 +734,25 @@ TEST(BbsCommandParser, RoomDelRemovesRoomAndPurgesItsData) {
   makeKey(reader, 46);
   f.run(admin, "REGISTER capo");
   f.run(reader, "REGISTER remo");
-  f.run(reader, "S 2");  // iscritto anche a Tecnico (id 2), non di default
-  f.run(admin, "E 2 un post qualunque", 100);
+  f.run(reader, "S 2");  // entra in Tecnico (id 2), non quella di default
+  f.run(admin, "S 2");   // anche l'admin, per poterci postare
+  f.run(admin, "E un post qualunque", 100);
 
   EXPECT_EQ(f.run(admin, "ROOM DEL 2"), std::string(strings::kRoomDelOkPrefix) + "Tecnico");
   EXPECT_EQ(f.run(admin, "K").find("2:"), std::string::npos);  // non compare piu' nell'elenco
 
+  // Chi era dentro alla stanza cancellata ne esce (nessuna stanza corrente).
+  EXPECT_EQ(f.run(reader, "E nuovo in cucina", 200), std::string(strings::kNoRoomSelected));
+
   // L'id 2 viene riassegnato a una stanza nuova, senza eredita' dalla
   // precedente (post, iscrizioni): verificato registrando una stanza nuova
-  // con lo stesso id e controllando che 'reader' non sia gia' iscritto.
+  // con lo stesso id e controllando che non ci siano post vecchi.
   EXPECT_EQ(f.run(admin, "ROOM ADD Cucina"), std::string(strings::kRoomAddOkPrefix) + "Cucina");
-  EXPECT_EQ(f.run(admin, "N 2"), std::string(strings::kNoNewPostsPrefix) + "Cucina");  // niente post vecchi
-  EXPECT_EQ(f.run(reader, "E 2 nuovo in cucina", 200), std::string(strings::kPostOkPrefix) + "Cucina");
+  f.run(admin, "S 2");
+  EXPECT_EQ(f.run(admin, "N"), std::string(strings::kNoNewPostsPrefix) + "Cucina");  // niente post vecchi
+
+  f.run(reader, "S 2");
+  EXPECT_EQ(f.run(reader, "E nuovo in cucina", 200), std::string(strings::kPostOkPrefix) + "Cucina");
 }
 
 TEST(BbsCommandParser, RoomDelByPlainUserIsDenied) {
@@ -749,6 +785,21 @@ TEST(BbsCommandParser, RoomUnknownSubcommandReportsUsage) {
   EXPECT_EQ(f.run(admin, "ROOM FOO"), std::string(strings::kRoomUsage));
 }
 
+TEST(BbsCommandParser, JoiningARoomShowsThePinnedPost) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN], author[BBS_PUBKEY_LEN];
+  makeKey(admin, 59);
+  makeKey(author, 90);
+  f.run(admin, "REGISTER capo59");
+  f.run(author, "REGISTER mario59");
+  f.run(author, "E leggi le regole", 100);
+  f.run(admin, "PIN 0");
+
+  auto join = f.run(admin, "S 0");
+  EXPECT_NE(join.find(std::string(strings::kJoinedRoomPrefix) + "Generale"), std::string::npos);
+  EXPECT_NE(join.find("mario59: leggi le regole"), std::string::npos);
+}
+
 TEST(BbsCommandParser, PinLastPostThenReadItWithPinned) {
   Fixture f;
   uint8_t admin[BBS_PUBKEY_LEN], author[BBS_PUBKEY_LEN];
@@ -760,7 +811,6 @@ TEST(BbsCommandParser, PinLastPostThenReadItWithPinned) {
 
   EXPECT_EQ(f.run(admin, "PIN 0"), std::string(strings::kPinOkPrefix) + "Generale");
   EXPECT_EQ(f.run(admin, "PINNED"), std::string("mario6: annuncio importante"));
-  EXPECT_EQ(f.run(admin, "PINNED 0"), std::string("mario6: annuncio importante"));
 }
 
 TEST(BbsCommandParser, PinningANewPostReplacesThePreviousPin) {
@@ -834,10 +884,12 @@ TEST(BbsCommandParser, AllStringsFitInTextBudgetWithNicknameMargin) {
       strings::kHelpPostRegister, strings::kLoginNoAccount,          strings::kLoginWelcomeBackFmt,
       strings::kLogoutAck,        strings::kAlreadyRegisteredPrefix, strings::kRegisterOkPrefix,
       strings::kInvalidNickname,  strings::kUnknownPostRegister,     strings::kStoreFull,
-      strings::kInvalidRoom,      strings::kPostEmptyText,           strings::kPostOkPrefix,
-      strings::kNoNewPostsPrefix, strings::kMailNoNew,               strings::kMailUnknownRecipient,
-      strings::kMailEmptyText,    strings::kMailSentPrefix,          strings::kSubscribedPrefix,
-      strings::kUnsubscribedPrefix,        strings::kNewPostsNotifyFmt,        strings::kPermissionDenied,
+      strings::kInvalidRoom,      strings::kPostEmptyText,           strings::kNoRoomSelected,
+      strings::kPostOkPrefix,     strings::kNoNewPostsPrefix,        strings::kMailNoNew,
+      strings::kMailUnknownRecipient,
+      strings::kMailEmptyText,    strings::kMailSentPrefix,          strings::kJoinedRoomPrefix,
+      strings::kPinnedInline,     strings::kLeftRoomPrefix,          strings::kNotInAnyRoom,
+      strings::kPermissionDenied,
       strings::kTargetNotFound,            strings::kMutedCannotPost,          strings::kRoomClosed,
       strings::kRateLimited,               strings::kDelPostNothingToDelete,   strings::kBanOkPrefix,
       strings::kUnbanOkPrefix,             strings::kMuteOkPrefix,             strings::kUnmuteOkPrefix,

@@ -16,7 +16,8 @@ class MyMeshReplyChannel : public IReplyChannel {
 public:
   explicit MyMeshReplyChannel(MyMesh* mesh) : _mesh(mesh) {}
 
-  bool sendReply(const uint8_t pub_key[BBS_PUBKEY_LEN], const uint8_t* payload, size_t len) override;
+  bool sendAuthoredReply(const uint8_t pub_key[BBS_PUBKEY_LEN], const uint8_t author_pub_key[BBS_PUBKEY_LEN],
+                          const uint8_t* payload, size_t len) override;
 
 private:
   MyMesh* _mesh;

@@ -28,15 +28,6 @@ public:
   UserId userIdAt(size_t i) const;
   uint32_t lastActivityAt(size_t i) const;
 
-  // Notifiche in sospeso per stanza (Fase 2, accorpamento). Un post nuovo
-  // in una stanza aggiunge un "in sospeso"; se non ce n'era gia' uno, parte
-  // la finestra di attesa. Nessun effetto se la sessione non esiste.
-  void addPendingPost(UserId id, uint8_t room_id, uint32_t now_ts);
-  bool hasPendingReadyToFlush(UserId id, uint8_t room_id, uint32_t now_ts,
-                               uint32_t batch_window_secs = BBS_NOTIFY_BATCH_WINDOW_SECS) const;
-  // Ritorna il conteggio accumulato e azzera lo stato "in sospeso" per quella stanza.
-  uint16_t consumePending(UserId id, uint8_t room_id);
-
   // Mancati recapiti: dopo BBS_MAX_MISSED_DELIVERIES consecutivi, la
   // sessione diventa irraggiungibile (niente piu' notifiche) finche' non
   // arriva un nuovo touch() (= l'utente ha ricontattato la BBS).
@@ -55,8 +46,6 @@ private:
     bool used;
     UserId user_id;
     uint32_t last_activity_ts;
-    uint16_t pending_count[BBS_MAX_ROOMS];
-    uint32_t pending_since_ts[BBS_MAX_ROOMS];  // 0 = nessun post in sospeso per quella stanza
     uint8_t missed_deliveries;
     bool reachable;
     uint8_t messages_this_window;

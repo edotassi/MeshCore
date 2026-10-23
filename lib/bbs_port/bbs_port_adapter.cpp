@@ -60,7 +60,7 @@ void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channe
   g_sessions = new SessionTable();
   g_rooms = new RoomState(*g_fs);
   g_room_registry = new RoomRegistry(*g_fs);
-  g_notifier = new Notifier(*g_users, *g_sessions, *g_room_registry, *reply_channel);
+  g_notifier = new Notifier(*g_users, *g_sessions, *g_room_registry, *g_posts, *reply_channel);
   g_modlog = new ModLog();
   g_motd = new MotdStore(*g_fs);
 
@@ -83,8 +83,8 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
   // aggancia al traffico che la BBS gia' riceve).
   g_notifier->tick(now_ts);
 
-  CommandContext ctx{*g_users,    *g_welcome, *g_posts,         *g_mail, *g_sessions,
-                     *g_notifier, *g_rooms,   *g_room_registry, *g_modlog, *g_motd, pub_key, now_ts};
+  CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
+                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, pub_key, now_ts};
   return processCommand(ctx, input, out, out_cap);
 }
 

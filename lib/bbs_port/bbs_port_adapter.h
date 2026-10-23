@@ -17,8 +17,8 @@ namespace port {
 
 // Da chiamare una volta in MyMesh::begin(), dopo il mount del filesystem
 // (LittleFS.begin(...)) e prima di ricevere qualunque messaggio. Chiamate
-// successive non hanno effetto. 'reply_channel' e' usato dal Notifier (Fase
-// 2) per le notifiche asincrone di post nuovi — vedi bbs_port_reply_channel.h.
+// successive non hanno effetto. 'reply_channel' e' usato dal Notifier per
+// il push asincrono dei post — vedi bbs_port_reply_channel.h.
 void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channel);
 
 // Elabora un comando BBS da un client MeshCore gia' autenticato (pubkey

@@ -22,8 +22,8 @@ constexpr const char* kHelpPreRegister =
     "Comandi disponibili: REGISTER <nome> (registrati), LOGIN, H (aiuto).";
 
 constexpr const char* kHelpPostRegister =
-    "Comandi: K stanze, N nuovi, E scrivi, M mail, S/U iscrivi/disiscrivi, "
-    "H aiuto, LOGIN, LOGOUT.";
+    "Comandi: scrivi per postare, E idem, N rileggi, S/U entra/esci, "
+    "K stanze, M mail, H aiuto, LOGIN, LOGOUT.";
 
 constexpr const char* kLoginNoAccount =
     "Nessun account con questa chiave. Registrati con: REGISTER <nome>";
@@ -48,7 +48,9 @@ constexpr const char* kStoreFull =
 
 constexpr const char* kInvalidRoom = "Stanza non valida. Usa K per l'elenco.";
 
-constexpr const char* kPostEmptyText = "Testo vuoto. Usa: E <testo> oppure E <stanza> <testo>.";
+constexpr const char* kPostEmptyText = "Testo vuoto. Scrivi il messaggio da pubblicare.";
+
+constexpr const char* kNoRoomSelected = "Non sei in nessuna stanza. Usa: S <stanza>.";
 
 // Concatenati dal parser con il nome della stanza.
 constexpr const char* kPostOkPrefix = "Pubblicato in ";
@@ -65,13 +67,14 @@ constexpr const char* kMailSentPrefix = "Mail inviata a ";
 
 // Concatenato dal parser con "<nickname>: <testo>" della mail trovata.
 
-// Concatenati dal parser con il nome della stanza.
-constexpr const char* kSubscribedPrefix = "Iscritto a ";
-constexpr const char* kUnsubscribedPrefix = "Disiscritto da ";
-
-// Format string per snprintf: notifica accorpata di post nuovi (Fase 2).
-// %u = conteggio, %s = nome stanza.
-constexpr const char* kNewPostsNotifyFmt = "%u nuovi in %s, N per leggere";
+// Concatenato dal parser con il nome della stanza (S).
+constexpr const char* kJoinedRoomPrefix = "Sei in: ";
+// Prefisso del post fissato mostrato subito dopo l'ingresso in una stanza
+// (S), prima di "<nickname>: <testo>".
+constexpr const char* kPinnedInline = "Fissato: ";
+// Concatenato dal parser con il nome della stanza (U).
+constexpr const char* kLeftRoomPrefix = "Uscito da: ";
+constexpr const char* kNotInAnyRoom = "Non eri in nessuna stanza.";
 
 // Fase 3: ruoli, moderazione, anti-abuso.
 constexpr const char* kPermissionDenied = "Non hai i permessi per questo comando.";
@@ -100,7 +103,7 @@ constexpr const char* kModLogCountFmt = "%u azioni nel registro di moderazione."
 
 // Fase 4: funzioni leggere.
 constexpr const char* kWhoNoOne = "Nessuno online al momento.";
-constexpr const char* kSearchEmptyKeyword = "Usa: SEARCH <stanza> <parola>.";
+constexpr const char* kSearchEmptyKeyword = "Usa: SEARCH <parola>.";
 constexpr const char* kSearchNoMatch = "Nessun risultato tra i post recenti.";
 constexpr const char* kMotdNotSet = "Nessun messaggio del giorno impostato.";
 constexpr const char* kMotdCleared = "Messaggio del giorno rimosso.";

@@ -37,7 +37,7 @@ bool UserStore::readFieldsFromFile(IFile& f, UserRecord& rec) const {
     ok = readU32(f, rec.last_read[i]);
   }
   ok = ok && readU32(f, rec.last_mail_read_seq);
-  ok = ok && (f.read(&rec.subscribed_rooms, 1) == 1);
+  ok = ok && (f.read(&rec.current_room, 1) == 1);
   ok = ok && (f.read(rec.reserved, sizeof(rec.reserved)) == sizeof(rec.reserved));
   return ok;
 }
@@ -53,7 +53,7 @@ bool UserStore::writeFieldsToFile(IFile& f, const UserRecord& rec) const {
     ok = (writeU32(f, rec.last_read[i]) == 4);
   }
   ok = ok && (writeU32(f, rec.last_mail_read_seq) == 4);
-  ok = ok && (f.write(&rec.subscribed_rooms, 1) == 1);
+  ok = ok && (f.write(&rec.current_room, 1) == 1);
   ok = ok && (f.write(rec.reserved, sizeof(rec.reserved)) == sizeof(rec.reserved));
   return ok;
 }
@@ -148,7 +148,7 @@ RegisterResult UserStore::registerUser(const uint8_t pub_key[BBS_PUBKEY_LEN], co
   rec.flags = 0;
   rec.created_ts = now_ts;
   rec.last_login_ts = now_ts;
-  rec.subscribed_rooms = kDefaultSubscribedMask;
+  rec.current_room = kDefaultRoomId;
 
   IFile* f = _fs.open(_path, 'a');
   if (!f || !f->valid()) {
@@ -229,23 +229,16 @@ bool UserStore::setLastMailRead(UserId id, uint32_t timestamp) {
       id, [](UserRecord& r, uint32_t ts, uint32_t) { r.last_mail_read_seq = ts; }, timestamp, 0);
 }
 
-bool UserStore::isSubscribed(UserId id, uint8_t room_id) const {
-  if (room_id >= BBS_MAX_ROOMS) return false;
+uint8_t UserStore::getCurrentRoom(UserId id) const {
   UserRecord rec;
-  if (!readRecordAt(id, rec)) return false;
-  return (rec.subscribed_rooms & (1u << room_id)) != 0;
+  if (!readRecordAt(id, rec)) return kNoRoom;
+  return rec.current_room;
 }
 
-bool UserStore::setSubscribed(UserId id, uint8_t room_id, bool subscribed) {
-  if (room_id >= BBS_MAX_ROOMS) return false;
-  uint32_t bit = (1u << room_id);
+bool UserStore::setCurrentRoom(UserId id, uint8_t room_id) {
+  if (room_id != kNoRoom && room_id >= BBS_MAX_ROOMS) return false;
   return rewriteApplying(
-      id,
-      [](UserRecord& r, uint32_t bit_arg, uint32_t subscribed_arg) {
-        if (subscribed_arg) r.subscribed_rooms |= (uint8_t)bit_arg;
-        else r.subscribed_rooms &= (uint8_t)~bit_arg;
-      },
-      bit, subscribed ? 1u : 0u);
+      id, [](UserRecord& r, uint32_t room, uint32_t) { r.current_room = (uint8_t)room; }, room_id, 0);
 }
 
 bool UserStore::clearRoomForAllUsers(uint8_t room_id) {
@@ -267,13 +260,12 @@ bool UserStore::clearRoomForAllUsers(uint8_t room_id) {
     return false;
   }
 
-  uint8_t bit = (uint8_t)(1u << room_id);
   bool ok = true;
   for (UserId i = 0; i < n && ok; i++) {
     UserRecord rec;
     ok = readFieldsFromFile(*src, rec);
     if (ok) {
-      rec.subscribed_rooms &= (uint8_t)~bit;
+      if (rec.current_room == room_id) rec.current_room = kNoRoom;
       rec.last_read[room_id] = 0;
     }
     ok = ok && writeFieldsToFile(*dst, rec);

@@ -14,10 +14,12 @@
 namespace bbs {
 namespace port {
 
-bool MyMeshReplyChannel::sendReply(const uint8_t pub_key[BBS_PUBKEY_LEN], const uint8_t* payload, size_t len) {
+bool MyMeshReplyChannel::sendAuthoredReply(const uint8_t pub_key[BBS_PUBKEY_LEN],
+                                            const uint8_t author_pub_key[BBS_PUBKEY_LEN], const uint8_t* payload,
+                                            size_t len) {
   ClientInfo* client = _mesh->getBbsClient(pub_key);
   if (!client) return false;
-  return _mesh->sendBbsReply(client, payload, len);
+  return _mesh->sendBbsAuthoredReply(client, author_pub_key, payload, len);
 }
 
 } // namespace port

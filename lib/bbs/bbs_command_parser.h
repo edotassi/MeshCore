@@ -6,7 +6,6 @@
 #include "bbs_mail_store.h"
 #include "bbs_mod_log.h"
 #include "bbs_motd.h"
-#include "bbs_notifier.h"
 #include "bbs_pending_welcome.h"
 #include "bbs_post_store.h"
 #include "bbs_room_registry.h"
@@ -22,7 +21,6 @@ struct CommandContext {
   PostStore& posts;
   MailStore& mail;
   SessionTable& sessions;
-  Notifier& notifier;
   RoomState& rooms;
   RoomRegistry& room_registry;
   ModLog& modlog;

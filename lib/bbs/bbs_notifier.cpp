@@ -1,26 +1,12 @@
 #include "bbs_notifier.h"
 
-#include <cstdio>
 #include <cstring>
-
-#include "bbs_strings_it.h"
 
 namespace bbs {
 
-Notifier::Notifier(UserStore& users, SessionTable& sessions, RoomRegistry& rooms, IReplyChannel& reply)
-    : _users(users), _sessions(sessions), _rooms(rooms), _reply(reply) {}
-
-void Notifier::onNewPost(uint8_t room_id, UserId author_id, uint32_t now_ts) {
-  size_t n = _sessions.count();
-  for (size_t i = 0; i < n; i++) {
-    UserId uid = _sessions.userIdAt(i);
-    if (uid == author_id) continue;
-    if (!_sessions.isReachable(uid)) continue;
-    if (_users.isBanned(uid)) continue;
-    if (!_users.isSubscribed(uid, room_id)) continue;
-    _sessions.addPendingPost(uid, room_id, now_ts);
-  }
-}
+Notifier::Notifier(UserStore& users, SessionTable& sessions, RoomRegistry& rooms, PostStore& posts,
+                    IReplyChannel& reply)
+    : _users(users), _sessions(sessions), _rooms(rooms), _posts(posts), _reply(reply) {}
 
 void Notifier::tick(uint32_t now_ts) {
   // _sessions.count()/userIdAt() cambiano posizione logica se una sessione
@@ -29,27 +15,51 @@ void Notifier::tick(uint32_t now_ts) {
   size_t n = _sessions.count();
   for (size_t i = 0; i < n; i++) {
     UserId uid = _sessions.userIdAt(i);
+    if (!_sessions.isActive(uid, now_ts)) continue;
+    if (!_sessions.isReachable(uid)) continue;
+    if (_users.isBanned(uid)) continue;
 
-    for (size_t r = 0; r < _rooms.count(); r++) {
-      uint8_t room_id = _rooms.at(r).id;
-      if (!_sessions.hasPendingReadyToFlush(uid, room_id, now_ts)) continue;
+    uint8_t room_id = _users.getCurrentRoom(uid);
+    if (room_id == kNoRoom) continue;
+    if (_rooms.findRoom(room_id) == nullptr) continue;  // stanza cancellata nel frattempo
 
-      uint16_t count = _sessions.consumePending(uid, room_id);
-      if (count == 0) continue;
-      if (_users.isBanned(uid)) continue;  // bannato dopo che il post era gia' in coda
+    uint32_t after_ts = _users.getLastRead(uid, room_id);
+    PostRecord post;
+    if (!_posts.findNextUnread(room_id, after_ts, post)) continue;
 
-      char msg[64];
-      snprintf(msg, sizeof(msg), strings::kNewPostsNotifyFmt, (unsigned)count, _rooms.at(r).name);
+    if (post.user_id == uid) {
+      // Non si notifica l'autore del proprio post, ma si avanza comunque il
+      // puntatore: altrimenti questo stesso post bloccherebbe ogni tick
+      // successivo per sempre.
+      _users.setLastRead(uid, room_id, post.timestamp);
+      continue;
+    }
 
-      uint8_t pub_key[BBS_PUBKEY_LEN];
-      if (!_users.getPubkey(uid, pub_key)) continue;
+    uint8_t author_pub_key[BBS_PUBKEY_LEN];
+    if (!_users.getPubkey(post.user_id, author_pub_key)) continue;
 
-      bool ok = _reply.sendReply(pub_key, (const uint8_t*)msg, strlen(msg));
-      if (ok) {
-        _sessions.recordDeliverySuccess(uid);
-      } else {
-        _sessions.recordDeliveryFailure(uid);
-      }
+    char author_nick[BBS_NICK_LEN];
+    if (!_users.getNickname(post.user_id, author_nick, sizeof(author_nick))) {
+      strncpy(author_nick, "???", sizeof(author_nick));
+      author_nick[sizeof(author_nick) - 1] = 0;
+    }
+
+    char msg[BBS_MAX_TEXT_LEN + 1];
+    size_t len = 0;
+    for (const char* p = author_nick; *p != 0 && len + 1 < sizeof(msg); p++) msg[len++] = *p;
+    for (const char* p = ": "; *p != 0 && len + 1 < sizeof(msg); p++) msg[len++] = *p;
+    for (const char* p = post.text; *p != 0 && len + 1 < sizeof(msg); p++) msg[len++] = *p;
+    msg[len] = 0;
+
+    uint8_t recipient_pub_key[BBS_PUBKEY_LEN];
+    if (!_users.getPubkey(uid, recipient_pub_key)) continue;
+
+    bool ok = _reply.sendAuthoredReply(recipient_pub_key, author_pub_key, (const uint8_t*)msg, len);
+    if (ok) {
+      _users.setLastRead(uid, room_id, post.timestamp);
+      _sessions.recordDeliverySuccess(uid);
+    } else {
+      _sessions.recordDeliveryFailure(uid);  // si riprova al prossimo tick, last_read non avanza
     }
   }
 }
