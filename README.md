@@ -199,27 +199,28 @@ Una BBS a comandi testuali per Heltec V4, costruita sopra `simple_room_server`: 
 
 - Tutta la logica vive in `lib/bbs/` (pura, senza dipendenze da Arduino/MeshCore, testata nativamente con `pio test -e native`) e `lib/bbs_port/` (l'adattatore concreto: LittleFS, orologio, invio messaggi). Il firmware vero e proprio è `examples/bbs_room_server/`, copia di `simple_room_server` con un solo punto di aggancio in `onPeerDataRecv`.
 - I dati (utenti, post per stanza, mail, configurazione) sono su LittleFS in `/bbs/`, in una partizione dati da 8 MB dedicata (vedi l'environment `heltec_v4_bbs_room_server`), con log in append e integrità verificata via CRC16 — un log con la coda corrotta da uno spegnimento improvviso viene riparato all'avvio, non perso.
-- Il primo utente che si registra sul nodo diventa automaticamente amministratore. Le notifiche di post nuovi sono asincrone e accorpate (es. "3 nuovi in Generale, N per leggere"), consegnate agganciandosi al traffico che la BBS riceve comunque — nessun timer dedicato.
+- Il primo utente che si registra sul nodo diventa automaticamente amministratore. Ogni utente sta in una sola **stanza corrente** alla volta (`S <n>` per entrare, `U` per uscire), e i comandi di stanza (`E`, `N`, `PINNED`, `SEARCH`, testo libero) agiscono su quella. I post nuovi della stanza corrente vengono spinti all'utente interi, uno alla volta, come nel Room Server originale di MeshCore, firmati con la chiave pubblica dell'autore vero così che il client li attribuisca a lui. La consegna si aggancia al traffico che la BBS riceve comunque (nessun timer dedicato); un invio fallito viene ritentato alla volta successiva.
 - Le stanze (Generale, Annunci, Tecnico di default) sono un elenco dinamico persistito su LittleFS, modificabile a runtime dall'amministratore con `ROOM ADD`/`ROOM DEL` — non serve ricompilare. I limiti (dimensione messaggi, tasso anti-abuso, ritenzione post, numero massimo di stanze) restano invece costanti di compilazione in `lib/bbs/bbs_config.h`.
 - Le risposte che elencano più voci (`K`, `WHO`) le separano con un a-capo, una per riga, invece di un unico rigo con spazi — più leggibile su OLED/client che mostrano il testo multi-riga; se il tuo client non va a capo su `\n`, fallo presente, è una scelta facile da rivedere.
-- `export`/`import` sono comandi da console seriale/USB del nodo (non raggiungibili dalla mesh LoRa, stesso canale amministrativo di `get acl`/`erase`). `export` stampa su Serial un dump testuale di stanze, utenti e post (non la mail privata, non le iscrizioni) — copialo e salvalo (es. `pio device monitor -b 115200 | tee backup.txt`). `import` lo ripristina, ma **solo su un nodo vuoto** (nessun utente ancora registrato): digita `import`, poi incolla di nuovo tutto il testo dell'`export` nella console. Non è un merge — se il nodo ha già dati, l'import viene rifiutato.
+- `export`/`import` sono comandi da console seriale/USB del nodo (non raggiungibili dalla mesh LoRa, stesso canale amministrativo di `get acl`/`erase`). `export` stampa su Serial un dump testuale di stanze, utenti e post (non la mail privata, non la stanza corrente degli utenti) — copialo e salvalo (es. `pio device monitor -b 115200 | tee backup.txt`). `import` lo ripristina, ma **solo su un nodo vuoto** (nessun utente ancora registrato): digita `import`, poi incolla di nuovo tutto il testo dell'`export` nella console. Non è un merge — se il nodo ha già dati, l'import viene rifiutato.
 
 **Comandi** (un messaggio diretto al nodo, in inglese; le risposte sono in italiano)
 
 | Comando | Effetto |
 |---|---|
 | `REGISTER <nome>` | Registrazione con la propria chiave pubblica |
-| `LOGIN` | Bentornato, con conteggio di post e mail non letti (o il messaggio del giorno, se impostato) |
+| `LOGIN` | Bentornato, con il numero di post non letti nella stanza corrente e di mail non lette (o il messaggio del giorno, se impostato) |
 | `LOGOUT` | Chiude la sessione |
 | `H` | Elenco comandi (ridotto se non ancora registrati) |
 | `K` | Elenco delle stanze (una per riga), con i post da leggere e il totale tra parentesi, es. `0:Generale(2/12)` |
-| `E [stanza] <testo>` | Pubblica un post (stanza di default se omessa) |
-| `N [stanza]` | Legge il prossimo messaggio non letto nella stanza |
-| `PINNED [stanza]` | Mostra il post fissato della stanza, se c'è |
-| `S <stanza>` / `U <stanza>` | Iscriviti / disiscriviti dalle notifiche di una stanza |
+| `S <n>` | Entra nella stanza numero `n` (il numero mostrato da `K`) e la rende la stanza corrente; mostra il post fissato, se c'è |
+| `U` | Esce dalla stanza corrente (non ricevi più i post spinti) |
+| `<testo>` / `E <testo>` | Pubblica un post nella stanza corrente (un messaggio che non è un comando vale come post) |
+| `N` | Rilegge il prossimo post non letto della stanza corrente |
+| `PINNED` | Mostra il post fissato della stanza corrente, se c'è |
 | `M` | Legge la prossima mail privata non letta |
 | `M <nome> <testo>` | Invia una mail privata |
-| `SEARCH <stanza> <parola>` | Cerca una parola tra gli ultimi post della stanza |
+| `SEARCH <parola>` | Cerca una parola tra gli ultimi post della stanza corrente |
 | `WHO` | Chi è online adesso (un nome per riga) |
 | `STATS` | Statistiche del nodo (utenti, post, mail) |
 | `MOTD` | Mostra il messaggio del giorno |
@@ -236,7 +237,7 @@ Una BBS a comandi testuali per Heltec V4, costruita sopra `simple_room_server`: 
 | `SETMOD` / `SETADMIN` / `SETUSER <nome>` | Cambia ruolo (solo amministratore) |
 | `MOTD <testo>` / `MOTD CLEAR` | Imposta/rimuove il messaggio del giorno (solo amministratore) |
 | `ROOM ADD <nome>` | Crea una nuova stanza (nome: 1-15 caratteri, lettere/numeri/-/_, senza spazi — solo amministratore) |
-| `ROOM DEL <stanza>` | Cancella una stanza: post, iscrizioni e stato aperta/chiusa associati vengono eliminati; l'id torna disponibile per una stanza futura (solo amministratore) |
+| `ROOM DEL <stanza>` | Cancella una stanza: post e stato aperta/chiusa associati vengono eliminati e chi ci si trovava resta senza stanza corrente; l'id torna disponibile per una stanza futura (solo amministratore) |
 | `PIN <stanza>` | Fissa l'ultimo post della stanza (al più uno per stanza; fissarne un altro sposta il fissaggio) |
 | `UNPIN <stanza>` | Rimuove il fissaggio corrente della stanza |
 
