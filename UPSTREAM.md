@@ -2,12 +2,10 @@
 
 ## Modello adottato
 
-Questo repository è un fork personale (`origin` = edotassi/MeshCore) senza un
-remote `upstream` separato: il ramo `bbs` parte direttamente da `main` e vi
-confluiscono anche gli aggiornamenti futuri di MeshCore quando `main` viene
-aggiornato. Non esiste un ramo "del fork" distinto da `main` da tenere
-sincronizzato: il modello a più rami descritto nel piano originale si riduce
-quindi a `main` (base) → `bbs` (lavoro) → merge periodici da `main` a `bbs`.
+Questo repository è un fork personale (`origin` = edotassi/MeshCore) di
+`meshcore-dev/MeshCore`, configurato come remote `upstream`. Gli aggiornamenti
+di MeshCore entrano con una merge di `upstream/main` in `main` (su un ramo di
+appoggio), e da `main` arrivano a `bbs`: `upstream/main` → `main` → `bbs`.
 
 ## Punto di partenza
 
@@ -16,6 +14,19 @@ quindi a `main` (base) → `bbs` (lavoro) → merge periodici da `main` a `bbs`.
 - `examples/bbs_room_server/` è una copia di `examples/simple_room_server/`
   a questo stesso commit. Per vedere cosa upstream ha cambiato nel Room
   Server dopo questo punto: `git diff 49e8cf0f -- examples/simple_room_server`.
+
+## Sincronizzazioni con upstream
+
+- v1.18.0 (`upstream/main` @ `81dbae59`, 15/10/2026). Conflitti risolti in
+  `CommonCLI.cpp/.h` (le impostazioni radio sono passate a `CommonRadioPrefs`;
+  resta in `CommonCLI` solo `screen.timeout` del fork; `NodePrefs` tiene
+  `mqtt`/`wormhole` insieme al nuovo `custom`) e in
+  `simple_repeater/MyMesh.h` (`RepeaterStats` resta in `RepeaterStats.h`,
+  `MAX_CLIENTS` ora sta in `ClientACL.h`). Riportati a mano in
+  `bbs_room_server` i cambi di `simple_room_server`: `board.loop()`,
+  `attachDynamicPrefs()`, fix del buffer seriale, `TXT_TYPE_CLI_COMMAND`,
+  `set repeat on` deprecato. Per la prossima sincronizzazione:
+  `git diff 81dbae59 upstream/main -- examples/simple_room_server`.
 
 ## Decisioni tecniche prese in Fase 0
 
