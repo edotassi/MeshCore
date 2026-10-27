@@ -171,5 +171,29 @@ constexpr const char* kDigestChannelPublicOk = "Canale impostato: Public.";
 constexpr const char* kDigestChannelPrivateOk = "Canale privato impostato.";
 constexpr const char* kDigestNowOk = "Riepilogo in invio a breve.";
 
+// Test bot (BOT, solo amministratore).
+// Format string per snprintf dello stato: attivo/disattivato, elenco canali.
+constexpr const char* kBotStatusFmt = "Bot: %s, canali: %s.";
+constexpr const char* kBotStatusOn = "attivo";
+constexpr const char* kBotStatusOff = "disattivato";
+constexpr const char* kBotNoChannels = "nessuno";
+constexpr const char* kBotUsage = "Usa: BOT [ON|OFF|CHANNEL ADD #nome|PUBLIC|<nome> <psk base64>|CHANNEL DEL <nome>].";
+constexpr const char* kBotOnOk = "Bot attivato.";
+constexpr const char* kBotOffOk = "Bot disattivato.";
+// Format string: nome del canale.
+constexpr const char* kBotChannelAddedFmt = "Canale aggiunto: %s.";
+constexpr const char* kBotChannelRemovedFmt = "Canale rimosso: %s.";
+constexpr const char* kBotChannelFull = "Troppi canali: il massimo e' 4.";
+constexpr const char* kBotChannelDuplicate = "Canale gia' presente.";
+constexpr const char* kBotChannelNotFound = "Canale non trovato.";
+constexpr const char* kBotBadName =
+    "Nome non valido: usa #nome (a-z, 0-9, -, max 22) oppure un nome di 1-23 caratteri senza spazi.";
+constexpr const char* kBotSaveFailed = "Impossibile salvare il bot (errore di scrittura).";
+
+// Risposta del test bot, dopo "@[<mittente>": senza hop, oppure (format
+// string per snprintf) con %u = numero di hop, seguito dall'elenco del percorso.
+constexpr const char* kBotReplyDirect = " ricevuto diretto (0 hop)";
+constexpr const char* kBotReplyHopsFmt = "] ricevuto con %u hop via ";
+
 } // namespace strings
 } // namespace bbs

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include <FS.h>
+#include <Mesh.h>
 #include <MeshCore.h>
 
 #include "../bbs/bbs_port.h"
@@ -35,6 +36,29 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
 // nulla da inviare, se il giorno viene solo segnato come fatto (nessun post,
 // o finestra di recupero scaduta) o se init() non e' ancora stato chiamato.
 bool pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len);
+
+// --- Test bot (vedi bbs_bot.h) ---
+
+// Per MyMesh::searchChannelsByHash: copia in 'out' (al piu' 'max') i canali
+// del bot il cui hash di 1 byte coincide con 'hash', con la chiave gia'
+// risolta (anche per i canali hashtag). Ritorna 0 se il bot e' disattivato
+// o init() non e' ancora stato chiamato.
+int botSearchChannels(const uint8_t* hash, mesh::GroupChannel out[], int max);
+
+// Indice (nella tabella dei canali del bot) del canale con questa chiave, -1
+// se non e' un canale del bot.
+int botChannelIndex(const mesh::GroupChannel& ch);
+
+// Per MyMesh::onGroupDataRecv: 'text' e' il testo del messaggio di gruppo
+// ("<mittente>: <corpo>", null-terminato). Se e' un "test"/"!test" e il
+// cooldown del canale 'channel_idx' (da botChannelIndex) lo consente,
+// scrive in 'out' la risposta, SENZA prefisso del nodo, e ne ritorna la
+// lunghezza. Ritorna 0 (nulla da inviare) se non e' un comando, se il bot e'
+// disattivato, se l'indice non e' valido o se il cooldown e' attivo.
+// 'path' contiene 'hop_count' hash di 'hash_size' byte ciascuno. Il controllo
+// "messaggio mio" spetta al chiamante.
+size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, const uint8_t* path,
+                          uint8_t hash_size, unsigned long now_ms, char* out, size_t out_cap);
 
 // Dump testuale (stanze, utenti, post) su Serial, per un backup leggibile
 // prima di un repair/riflash, pensato per essere riletto da importFeedLine()

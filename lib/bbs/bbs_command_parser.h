@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "bbs_bot.h"
 #include "bbs_digest.h"
 #include "bbs_mail_store.h"
 #include "bbs_mod_log.h"
@@ -27,6 +28,7 @@ struct CommandContext {
   ModLog& modlog;
   MotdStore& motd;
   DigestStore& digest;
+  BotStore& bot;
   const uint8_t* pub_key;  // BBS_PUBKEY_LEN byte, del mittente
   uint32_t now_ts;
 };

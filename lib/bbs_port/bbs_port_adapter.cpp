@@ -1,9 +1,11 @@
 #include "bbs_port_adapter.h"
 
 #include <Arduino.h>
+#include <Utils.h>
 
 #include <cstring>
 
+#include "../bbs/bbs_bot.h"
 #include "../bbs/bbs_command_parser.h"
 #include "../bbs/bbs_digest.h"
 #include "../bbs/bbs_mail_store.h"
@@ -38,6 +40,43 @@ RoomRegistry* g_room_registry = nullptr;
 ModLog* g_modlog = nullptr;
 MotdStore* g_motd = nullptr;
 DigestStore* g_digest = nullptr;
+BotStore* g_bot = nullptr;
+BotCooldown* g_bot_cooldown = nullptr;
+
+// Canali del bot con la chiave gia' risolta, ricalcolata quando cambia
+// BotStore::generation().
+mesh::GroupChannel g_bot_channels[kBotMaxChannels];
+size_t g_bot_channel_count = 0;
+uint32_t g_bot_resolved_gen = 0;
+bool g_bot_resolved = false;
+
+void resolveBotChannels() {
+  if (g_bot == nullptr) return;
+  if (g_bot_resolved && g_bot_resolved_gen == g_bot->generation()) return;
+
+  const BotSettings& s = g_bot->get();
+  g_bot_channel_count = s.count;
+  for (size_t i = 0; i < s.count; i++) {
+    const BotChannel& c = s.channels[i];
+    mesh::GroupChannel& ch = g_bot_channels[i];
+    memset(ch.secret, 0, sizeof(ch.secret));
+    size_t key_len = c.psk_len;
+    if (c.isHashtag()) {
+      // Chiave di un canale hashtag: primi 16 byte dello SHA-256 del nome
+      // (minuscolo, '#' incluso), come i client MeshCore.
+      uint8_t digest[32];
+      mesh::Utils::sha256(digest, sizeof(digest), (const uint8_t*)c.name, (int)strlen(c.name));
+      memcpy(ch.secret, digest, 16);
+      key_len = 16;
+    } else {
+      memcpy(ch.secret, c.psk, key_len);
+    }
+    // Stesso hash che BaseChatMesh::addChannel calcola dalla chiave.
+    mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, (int)key_len);
+  }
+  g_bot_resolved_gen = g_bot->generation();
+  g_bot_resolved = true;
+}
 
 } // namespace
 
@@ -67,6 +106,8 @@ void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channe
   g_modlog = new ModLog();
   g_motd = new MotdStore(*g_fs);
   g_digest = new DigestStore(*g_fs);
+  g_bot = new BotStore(*g_fs);
+  g_bot_cooldown = new BotCooldown();
 
   for (size_t i = 0; i < g_room_registry->count(); i++) {
     g_posts->repairRoom(g_room_registry->at(i).id);
@@ -88,7 +129,7 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
   g_notifier->tick(now_ts);
 
   CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
-                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, pub_key, now_ts};
+                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, *g_bot, pub_key, now_ts};
   return processCommand(ctx, input, out, out_cap);
 }
 
@@ -127,6 +168,37 @@ bool pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len) {
   memcpy(psk, s.psk, s.psk_len);
   psk_len = s.psk_len;
   return true;
+}
+
+int botSearchChannels(const uint8_t* hash, mesh::GroupChannel out[], int max) {
+  if (g_bot == nullptr || !g_bot->get().enabled) return 0;
+  resolveBotChannels();
+  int n = 0;
+  for (size_t i = 0; i < g_bot_channel_count && n < max; i++) {
+    if (memcmp(g_bot_channels[i].hash, hash, sizeof(g_bot_channels[i].hash)) == 0) out[n++] = g_bot_channels[i];
+  }
+  return n;
+}
+
+int botChannelIndex(const mesh::GroupChannel& ch) {
+  if (g_bot == nullptr) return -1;
+  resolveBotChannels();
+  for (size_t i = 0; i < g_bot_channel_count; i++) {
+    if (memcmp(g_bot_channels[i].secret, ch.secret, sizeof(ch.secret)) == 0) return (int)i;
+  }
+  return -1;
+}
+
+size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, const uint8_t* path,
+                          uint8_t hash_size, unsigned long now_ms, char* out, size_t out_cap) {
+  if (g_bot == nullptr || !g_bot->get().enabled || out_cap == 0) return 0;
+  if (channel_idx < 0 || (size_t)channel_idx >= g_bot->get().count) return 0;
+
+  char sender[40];
+  if (!parseTestTrigger(text, sender, sizeof(sender))) return 0;
+  // Il cooldown si consuma solo se la risposta parte davvero.
+  if (!g_bot_cooldown->allow((size_t)channel_idx, (uint32_t)now_ms)) return 0;
+  return formatHopReply(sender, hop_count, path, hash_size, out, out_cap);
 }
 
 namespace {

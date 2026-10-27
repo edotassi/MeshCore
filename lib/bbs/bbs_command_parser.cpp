@@ -568,6 +568,84 @@ size_t handleDigestCmd(CommandContext& ctx, const char* args, UserId actor, char
   return copyOut(ok_text, out, out_cap);
 }
 
+// --- Test bot (BOT, solo amministratore) ---
+
+size_t handleBotCmd(CommandContext& ctx, const char* args, UserId actor, char* out, size_t out_cap) {
+  if (!hasAtLeastRole(ctx, actor, ROLE_ADMIN)) return copyOut(strings::kPermissionDenied, out, out_cap);
+
+  char sub[8];
+  const char* rest = extractCommand(args, sub, sizeof(sub));
+
+  BotSettings s = ctx.bot.get();  // persisti-poi-applica: si modifica la copia
+  char buf[160];
+  const char* ok_text = nullptr;
+
+  if (sub[0] == 0) {
+    char list[kBotMaxChannels * (kBotNameLen + 2) + 1];
+    size_t list_len = 0;
+    list[0] = 0;
+    for (size_t i = 0; i < s.count; i++) {
+      int n = snprintf(list + list_len, sizeof(list) - list_len, "%s%s", i ? ", " : "", s.channels[i].name);
+      if (n > 0 && list_len + (size_t)n < sizeof(list)) list_len += (size_t)n;
+    }
+    snprintf(buf, sizeof(buf), strings::kBotStatusFmt, s.enabled ? strings::kBotStatusOn : strings::kBotStatusOff,
+             s.count ? list : strings::kBotNoChannels);
+    return copyOut(buf, out, out_cap);
+  }
+
+  if (strcmp(sub, "ON") == 0 || strcmp(sub, "OFF") == 0) {
+    s.enabled = (sub[1] == 'N');
+    ok_text = s.enabled ? strings::kBotOnOk : strings::kBotOffOk;
+  } else if (strcmp(sub, "CHANNEL") == 0) {
+    char op[8];
+    rest = extractCommand(rest, op, sizeof(op));
+    char name[48];
+    rest = extractToken(rest, name, sizeof(name));
+    if (name[0] == 0) return copyOut(strings::kBotUsage, out, out_cap);
+
+    if (strcmp(op, "ADD") == 0) {
+      char psk_tok[64];
+      extractToken(rest, psk_tok, sizeof(psk_tok));
+
+      BotChannel c;
+      if (name[0] == '#') {
+        if (!normalizeHashtagName(name, c.name, sizeof(c.name))) return copyOut(strings::kBotBadName, out, out_cap);
+        c.psk_len = 0;
+      } else if (psk_tok[0] == 0) {
+        if (!equalsIgnoreCase(name, "PUBLIC")) return copyOut(strings::kBotUsage, out, out_cap);
+        c = BotSettings().channels[0];
+      } else {
+        if (!isValidKeyedName(name)) return copyOut(strings::kBotBadName, out, out_cap);
+        uint8_t psk[kBotPskMaxLen];
+        size_t n = base64Decode(psk_tok, psk, sizeof(psk));
+        if (n != 16 && n != 32) return copyOut(strings::kDigestBadPsk, out, out_cap);
+        strcpy(c.name, name);
+        memcpy(c.psk, psk, n);
+        c.psk_len = (uint8_t)n;
+      }
+      if (s.find(c.name) >= 0) return copyOut(strings::kBotChannelDuplicate, out, out_cap);
+      if (s.count >= kBotMaxChannels) return copyOut(strings::kBotChannelFull, out, out_cap);
+      s.channels[s.count++] = c;
+      snprintf(buf, sizeof(buf), strings::kBotChannelAddedFmt, c.name);
+    } else if (strcmp(op, "DEL") == 0) {
+      int idx = s.find(name);
+      if (idx < 0) return copyOut(strings::kBotChannelNotFound, out, out_cap);
+      snprintf(buf, sizeof(buf), strings::kBotChannelRemovedFmt, s.channels[idx].name);
+      for (size_t i = (size_t)idx; i + 1 < s.count; i++) s.channels[i] = s.channels[i + 1];
+      s.count--;
+      s.channels[s.count] = BotChannel();
+    } else {
+      return copyOut(strings::kBotUsage, out, out_cap);
+    }
+    ok_text = buf;
+  } else {
+    return copyOut(strings::kBotUsage, out, out_cap);
+  }
+
+  if (!ctx.bot.save(s)) return copyOut(strings::kBotSaveFailed, out, out_cap);
+  return copyOut(ok_text, out, out_cap);
+}
+
 } // namespace
 
 size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t out_cap) {
@@ -780,6 +858,10 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
 
   if (strcmp(cmd, "DIGEST") == 0) {
     return handleDigestCmd(ctx, args, uid, out, out_cap);
+  }
+
+  if (strcmp(cmd, "BOT") == 0) {
+    return handleBotCmd(ctx, args, uid, out, out_cap);
   }
 
   // Nessun comando riconosciuto: testo libero, trattato come post nella

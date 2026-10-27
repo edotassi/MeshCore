@@ -29,9 +29,10 @@ struct Fixture {
   ModLog modlog;
   MotdStore motd{fs};
   DigestStore digest{fs};
+  BotStore bot{fs};
 
   std::string run(const uint8_t* pub_key, const char* input, uint32_t now_ts = 1000) {
-    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, digest, pub_key, now_ts};
+    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, digest, bot, pub_key, now_ts};
     char out[256];
     size_t n = processCommand(ctx, input, out, sizeof(out));
     return std::string(out, n);
@@ -1039,4 +1040,104 @@ TEST(BbsCommandParser, DigestNowSetsPendingFlagOnly) {
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+// --- BOT ---
+
+TEST(BbsCommandParser, BotIsAdminOnly) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN], user[BBS_PUBKEY_LEN];
+  makeKey(admin, 130);
+  makeKey(user, 131);
+  f.run(admin, "REGISTER capob");
+  f.run(user, "REGISTER utenteb");
+  for (const char* cmd : {"BOT", "BOT ON", "BOT OFF", "BOT CHANNEL ADD #x", "BOT CHANNEL DEL #test", "BOT boh"}) {
+    EXPECT_EQ(f.run(user, cmd), std::string(strings::kPermissionDenied)) << cmd;
+  }
+  EXPECT_FALSE(f.bot.get().enabled);
+  EXPECT_EQ(f.bot.get().count, 2);
+}
+
+TEST(BbsCommandParser, BotStatusAndOnOff) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 132);
+  f.run(admin, "REGISTER capob");
+  EXPECT_EQ(f.run(admin, "BOT"), "Bot: disattivato, canali: Public, #test.");
+  EXPECT_EQ(f.run(admin, "bot on"), std::string(strings::kBotOnOk));
+  EXPECT_TRUE(f.bot.get().enabled);
+  EXPECT_EQ(f.run(admin, "BOT"), "Bot: attivo, canali: Public, #test.");
+  EXPECT_EQ(f.run(admin, "BOT OFF"), std::string(strings::kBotOffOk));
+  EXPECT_FALSE(f.bot.get().enabled);
+  EXPECT_EQ(f.run(admin, "BOT FOO"), std::string(strings::kBotUsage));
+}
+
+TEST(BbsCommandParser, BotChannelAddHashtagPrivatePublic) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 133);
+  f.run(admin, "REGISTER capob");
+  uint32_t gen = f.bot.generation();
+
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #Meshtest"), "Canale aggiunto: #meshtest.");
+  EXPECT_GT(f.bot.generation(), gen);
+  EXPECT_EQ(f.bot.get().count, 3);
+  EXPECT_EQ(f.bot.get().channels[2].psk_len, 0);
+
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD Locale AAAAAAAAAAAAAAAAAAAAAA=="), "Canale aggiunto: Locale.");
+  EXPECT_EQ(f.bot.get().count, 4);
+  EXPECT_EQ(f.bot.get().channels[3].psk_len, 16);
+
+  // Niente PSK nello stato.
+  EXPECT_EQ(f.run(admin, "BOT"), "Bot: disattivato, canali: Public, #test, #meshtest, Locale.");
+
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL public"), "Canale rimosso: Public.");
+  EXPECT_EQ(f.bot.get().count, 3);
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD PUBLIC"), "Canale aggiunto: Public.");
+  EXPECT_EQ(f.bot.get().channels[3].psk_len, 16);
+  EXPECT_STREQ(f.bot.get().channels[3].name, "Public");
+  uint8_t pub[32];
+  ASSERT_EQ(base64Decode(kDigestPublicPskBase64, pub, sizeof(pub)), 16u);
+  EXPECT_EQ(memcmp(f.bot.get().channels[3].psk, pub, 16), 0);
+}
+
+TEST(BbsCommandParser, BotChannelAddErrors) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 134);
+  f.run(admin, "REGISTER capob");
+
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #TEST"), std::string(strings::kBotChannelDuplicate));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD public"), std::string(strings::kBotChannelDuplicate));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #te_st"), std::string(strings::kBotBadName));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #"), std::string(strings::kBotBadName));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #aaaaaaaaaaaaaaaaaaaaaaa"), std::string(strings::kBotBadName));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD aaaaaaaaaaaaaaaaaaaaaaaa AAAAAAAAAAAAAAAAAAAAAA=="),
+            std::string(strings::kBotBadName));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD Locale %%%"), std::string(strings::kDigestBadPsk));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD Locale AAAA"), std::string(strings::kDigestBadPsk));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD Locale"), std::string(strings::kBotUsage));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD"), std::string(strings::kBotUsage));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL"), std::string(strings::kBotUsage));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL FOO x"), std::string(strings::kBotUsage));
+  EXPECT_EQ(f.bot.get().count, 2);
+
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #a"), "Canale aggiunto: #a.");
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #b"), "Canale aggiunto: #b.");
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL ADD #c"), std::string(strings::kBotChannelFull));
+  EXPECT_EQ(f.bot.get().count, 4);
+}
+
+TEST(BbsCommandParser, BotChannelDel) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 135);
+  f.run(admin, "REGISTER capob");
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL #nonesiste"), std::string(strings::kBotChannelNotFound));
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL #TEST"), "Canale rimosso: #test.");
+  EXPECT_EQ(f.bot.get().count, 1);
+  EXPECT_EQ(f.run(admin, "BOT"), "Bot: disattivato, canali: Public.");
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL Public"), "Canale rimosso: Public.");
+  EXPECT_EQ(f.run(admin, "BOT"), "Bot: disattivato, canali: nessuno.");
+  EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL"), std::string(strings::kBotUsage));
 }

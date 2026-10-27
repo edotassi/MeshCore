@@ -1135,15 +1135,38 @@ bool MyMesh::saveFilter(ClientInfo* client) {
 
 // Lunghezza massima del testo di un messaggio di gruppo (MAX_TEXT_LEN di
 // MeshCore, 160 byte), prefisso "<nome nodo>: " incluso.
-static const size_t DIGEST_MAX_TEXT_LEN = 160;
+static const size_t GROUP_MAX_TEXT_LEN = 160;
 static const unsigned long DIGEST_CHECK_INTERVAL_MILLIS = 30000;
+
+void MyMesh::sendGroupText(const mesh::GroupChannel& ch, const char* text, bool reply_scope, uint32_t delay_millis) {
+  // Formato come "public" in simple_secure_chat: timestamp, flags, "<nome>: <testo>".
+  uint8_t temp[5 + GROUP_MAX_TEXT_LEN + 1];
+  uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
+  memcpy(temp, &timestamp, 4);
+  temp[4] = 0;
+  int len = snprintf((char *)&temp[5], GROUP_MAX_TEXT_LEN + 1, "%s: %s", _prefs.node_name, text);
+  if (len <= 0) return;
+  if ((size_t)len > GROUP_MAX_TEXT_LEN) len = GROUP_MAX_TEXT_LEN;
+
+  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, ch, temp, 5 + len);
+  if (pkt) {
+    if (reply_scope) {
+      sendFloodReply(pkt, delay_millis, _prefs.path_hash_mode + 1);
+    } else {
+      sendFloodScoped(default_scope, pkt, delay_millis, _prefs.path_hash_mode + 1);
+    }
+    MESH_DEBUG_PRINTLN("BBS group text sent (%d bytes)", len);
+  } else {
+    MESH_DEBUG_PRINTLN("BBS group text: createGroupDatagram failed");
+  }
+}
 
 void MyMesh::sendDigestIfDue() {
   size_t name_len = strlen(_prefs.node_name);
-  if (name_len + 2 >= DIGEST_MAX_TEXT_LEN) return;  // nome assurdamente lungo: niente spazio per il testo
-  size_t text_cap = DIGEST_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+  if (name_len + 2 >= GROUP_MAX_TEXT_LEN) return;  // nome assurdamente lungo: niente spazio per il testo
+  size_t text_cap = GROUP_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
 
-  char text[DIGEST_MAX_TEXT_LEN + 1];
+  char text[GROUP_MAX_TEXT_LEN + 1];
   uint8_t psk[32];
   size_t psk_len = 0;
   if (!bbs::port::pollDigest(text, text_cap, psk, psk_len)) return;
@@ -1154,22 +1177,43 @@ void MyMesh::sendDigestIfDue() {
   memcpy(ch.secret, psk, psk_len);
   mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, psk_len);
 
-  // Formato come "public" in simple_secure_chat: timestamp, flags, "<nome>: <testo>".
-  uint8_t temp[5 + DIGEST_MAX_TEXT_LEN + 1];
-  uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
-  memcpy(temp, &timestamp, 4);
-  temp[4] = 0;
-  int len = snprintf((char *)&temp[5], DIGEST_MAX_TEXT_LEN + 1, "%s: %s", _prefs.node_name, text);
-  if (len <= 0) return;
-  if ((size_t)len > DIGEST_MAX_TEXT_LEN) len = DIGEST_MAX_TEXT_LEN;
+  sendGroupText(ch, text, false, 0);
+}
 
-  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, ch, temp, 5 + len);
-  if (pkt) {
-    sendFloodScoped(default_scope, pkt, 0, _prefs.path_hash_mode + 1);
-    MESH_DEBUG_PRINTLN("BBS digest sent (%d bytes)", len);
-  } else {
-    MESH_DEBUG_PRINTLN("BBS digest: createGroupDatagram failed");
-  }
+int MyMesh::searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) {
+  return bbs::port::botSearchChannels(hash, channels, max_matches);
+}
+
+// Test bot: risponde a "test"/"!test" sul canale da cui e' arrivato il messaggio.
+void MyMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) {
+  if (type != PAYLOAD_TYPE_GRP_TXT || len < 5) return;
+  if ((data[4] >> 2) != 0) return;           // solo testo semplice
+  if (!packet->isRouteFlood()) return;
+
+  size_t name_len = strlen(_prefs.node_name);
+  if (name_len + 2 >= GROUP_MAX_TEXT_LEN) return;
+  size_t text_cap = GROUP_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+
+  // Il testo e' "<mittente>: <corpo>" con zeri di riempimento: copia terminata.
+  char incoming[MAX_PACKET_PAYLOAD];
+  size_t text_len = len - 5;
+  if (text_len >= sizeof(incoming)) text_len = sizeof(incoming) - 1;
+  memcpy(incoming, &data[5], text_len);
+  incoming[text_len] = 0;
+
+  // Ignora i messaggi del nodo stesso ("<nome>: ...").
+  if (strncmp(incoming, _prefs.node_name, name_len) == 0 && incoming[name_len] == ':' && incoming[name_len + 1] == ' ') return;
+
+  int idx = bbs::port::botChannelIndex(channel);
+  if (idx < 0) return;
+
+  char reply[GROUP_MAX_TEXT_LEN + 1];
+  size_t reply_len = bbs::port::botHandleGroupText(idx, incoming, packet->getPathHashCount(), packet->path,
+                                                   packet->getPathHashSize(), millis(), reply, text_cap);
+  if (reply_len == 0) return;
+
+  // Ritardo casuale, cosi' la risposta non collide con le ritrasmissioni del flood.
+  sendGroupText(channel, reply, true, getRNG()->nextInt(1000, 3000));
 }
 
 void MyMesh::loop() {

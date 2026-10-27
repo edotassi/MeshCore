@@ -188,6 +188,8 @@ protected:
   void onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender_idx, const uint8_t* secret, uint8_t* data, size_t len) override;
   bool onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* path, uint8_t path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) override;
   void onAckRecv(mesh::Packet* packet, uint32_t ack_crc) override;
+  int searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) override;
+  void onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) override;
 
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
@@ -217,6 +219,10 @@ public:
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
   void sendDigestIfDue();  // riepilogo giornaliero BBS (vedi bbs_port_adapter.h: pollDigest)
+  // Invia "<nome nodo>: <text>" come messaggio di gruppo flood sul canale dato.
+  // reply_scope: usa lo scope regionale del pacchetto in ricezione (sendFloodReply)
+  // invece di quello predefinito; solo da dentro onGroupDataRecv.
+  void sendGroupText(const mesh::GroupChannel& ch, const char* text, bool reply_scope, uint32_t delay_millis);
 
   // CommonCLICallbacks
   void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;
