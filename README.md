@@ -265,6 +265,16 @@ Una BBS a comandi testuali per Heltec V4, costruita sopra `simple_room_server`: 
 | `PIN <stanza>` | Fissa l'ultimo post della stanza (al più uno per stanza; fissarne un altro sposta il fissaggio) |
 | `UNPIN <stanza>` | Rimuove il fissaggio corrente della stanza |
 
+**Comandi del bot** (scritti su un canale di gruppo del bot — di default Public e `#test` — non in messaggio diretto; il bot va attivato con `BOT ON`)
+
+| Messaggio sul canale | Risposta della BBS sullo stesso canale |
+|---|---|
+| `test` / `!test` | `@[mittente] ricevuto con N hop via a1,7f,c2` (o `ricevuto diretto (0 hop)`) |
+| `ping` / `!ping` | `@[mittente] pong, N hop via a1,7f,c2` (o `pong, diretto (0 hop)`) |
+| `!news` | `@[mittente] [fonte] titolo` dell'ultima news ricevuta (o `nessuna news disponibile`) |
+
+Il messaggio deve contenere solo il comando (maiuscole e spazi ai lati ignorati: `test 123` non conta). Al massimo una risposta ogni 30 secondi per canale (condivisa tra i comandi), inviata dopo un ritardo casuale di 1-3 secondi; la BBS non risponde ai propri messaggi.
+
 **Ambienti PlatformIO**
 
 - `heltec_v4_bbs_room_server` — BBS pura, nessun bridge
