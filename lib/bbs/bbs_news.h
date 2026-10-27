@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "bbs_bot.h"
 #include "bbs_config.h"
 #include "bbs_port.h"
 #include "bbs_post_store.h"
@@ -69,9 +70,13 @@ struct NewsSettings {
   uint8_t key[kNewsKeyMaxLen];
   uint8_t key_len;  // 0 = non impostata, altrimenti 16-32
   uint8_t room_id;  // stanza delle news, kNoRoom = non impostata
+  // Canale di gruppo su cui ogni news accettata viene anche trasmessa
+  // (tipicamente l'hashtag "#news"); psk_len 0 = hashtag, come per il bot.
+  BotChannel channel;
+  bool channel_enabled;  // false = nessuna trasmissione sul canale
 
   // Valori predefiniti: disattivato, nessun server, porta 1883, topic
-  // "bbs/news", nessuna chiave, nessuna stanza.
+  // "bbs/news", nessuna chiave, nessuna stanza, nessun canale.
   NewsSettings();
 };
 
@@ -89,6 +94,11 @@ enum class NewsIngestResult : uint8_t {
 
 // Nome breve dell'esito, per i log seriali (es. "BAD_SIGNATURE").
 const char* newsResultName(NewsIngestResult r);
+
+// true se il canale delle news e' coerente: nome vuoto (non impostato, e allora
+// non puo' essere abilitato) oppure un hashtag valido gia' normalizzato
+// (psk_len 0) o un nome con chiave valido (psk_len 16/32).
+bool newsChannelValid(const NewsSettings& s);
 
 // Stato solo RAM (non persistito) per il comando NEWS.
 struct NewsStatus {
@@ -177,8 +187,10 @@ bool verifyNews(const NewsMessage& msg, const uint8_t* key, size_t key_len);
 // cronologico), applica la ritenzione e ricorda l'id. Ignora lo stato
 // "chiusa" della stanza (CLOSE serve a impedire che gli utenti vi scrivano).
 // Aggiorna lo stato RAM di 'news' (ultimo esito, conteggio, ultima ricezione).
+// Se 'posted_text' non e' nullptr (capacita' almeno BBS_MAX_TEXT_LEN + 1) e
+// l'esito e' OK, vi copia il testo accodato (per la trasmissione sul canale).
 NewsIngestResult ingestNews(NewsStore& news, NewsSeen& seen, PostStore& posts, RoomRegistry& rooms,
                             UserStore& users, UserId system_user, const char* payload, size_t len,
-                            uint32_t now_ts, bool clock_valid);
+                            uint32_t now_ts, bool clock_valid, char* posted_text = nullptr);
 
 } // namespace bbs

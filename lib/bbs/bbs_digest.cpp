@@ -54,6 +54,13 @@ size_t utf8SafeLen(const char* s, size_t len, size_t max) {
   return n;
 }
 
+int hexVal(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 int b64Val(char c) {
   if (c >= 'A' && c <= 'Z') return c - 'A';
   if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -91,6 +98,20 @@ size_t base64Decode(const char* in, uint8_t* out, size_t out_cap) {
     }
   }
   return out_len;
+}
+
+size_t decodeKey(const char* in, uint8_t* out, size_t out_cap) {
+  size_t len = strlen(in);
+  if (len == 32 || len == 64) {
+    bool all_hex = true;
+    for (size_t i = 0; i < len && all_hex; i++) all_hex = hexVal(in[i]) >= 0;
+    if (all_hex) {
+      if (len / 2 > out_cap) return 0;
+      for (size_t i = 0; i < len / 2; i++) out[i] = (uint8_t)(hexVal(in[2 * i]) * 16 + hexVal(in[2 * i + 1]));
+      return len / 2;
+    }
+  }
+  return base64Decode(in, out, out_cap);
 }
 
 DigestSettings::DigestSettings()

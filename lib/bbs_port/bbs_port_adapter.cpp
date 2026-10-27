@@ -12,6 +12,7 @@
 #include "../bbs/bbs_mod_log.h"
 #include "../bbs/bbs_motd.h"
 #include "../bbs/bbs_news.h"
+#include "../bbs/bbs_news_broadcast.h"
 #include "../bbs/bbs_notifier.h"
 #include "../bbs/bbs_pending_welcome.h"
 #include "../bbs/bbs_post_store.h"
@@ -54,10 +55,37 @@ size_t g_bot_channel_count = 0;
 uint32_t g_bot_resolved_gen = 0;
 bool g_bot_resolved = false;
 
+// Canale di trasmissione delle news con la chiave risolta, ricalcolato quando
+// cambia NewsStore::generation(). Se cambia il canale (o viene spento) la coda
+// in attesa e' scartata.
+NewsBroadcastQueue g_news_queue;
+mesh::GroupChannel g_news_channel;
+BotChannel g_news_channel_src;  // impostazione da cui deriva g_news_channel
+bool g_news_channel_on = false;
+uint32_t g_news_resolved_gen = 0;
+bool g_news_resolved = false;
+
 // Copia una stringa C troncandola, sempre terminata.
 void copyCString(char* dst, const char* src, size_t cap) {
   strncpy(dst, src, cap - 1);
   dst[cap - 1] = 0;
+}
+
+// Chiave e hash di un canale del bot o delle news (hashtag: primi 16 byte
+// dello SHA-256 del nome, minuscolo, '#' incluso, come i client MeshCore).
+void resolveChannel(const BotChannel& c, mesh::GroupChannel& ch) {
+  memset(ch.secret, 0, sizeof(ch.secret));
+  size_t key_len = c.psk_len;
+  if (c.isHashtag()) {
+    uint8_t digest[32];
+    mesh::Utils::sha256(digest, sizeof(digest), (const uint8_t*)c.name, (int)strlen(c.name));
+    memcpy(ch.secret, digest, 16);
+    key_len = 16;
+  } else {
+    memcpy(ch.secret, c.psk, key_len);
+  }
+  // Stesso hash che BaseChatMesh::addChannel calcola dalla chiave.
+  mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, (int)key_len);
 }
 
 void resolveBotChannels() {
@@ -68,21 +96,7 @@ void resolveBotChannels() {
   g_bot_channel_count = s.count;
   for (size_t i = 0; i < s.count; i++) {
     const BotChannel& c = s.channels[i];
-    mesh::GroupChannel& ch = g_bot_channels[i];
-    memset(ch.secret, 0, sizeof(ch.secret));
-    size_t key_len = c.psk_len;
-    if (c.isHashtag()) {
-      // Chiave di un canale hashtag: primi 16 byte dello SHA-256 del nome
-      // (minuscolo, '#' incluso), come i client MeshCore.
-      uint8_t digest[32];
-      mesh::Utils::sha256(digest, sizeof(digest), (const uint8_t*)c.name, (int)strlen(c.name));
-      memcpy(ch.secret, digest, 16);
-      key_len = 16;
-    } else {
-      memcpy(ch.secret, c.psk, key_len);
-    }
-    // Stesso hash che BaseChatMesh::addChannel calcola dalla chiave.
-    mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, (int)key_len);
+    resolveChannel(c, g_bot_channels[i]);
   }
   g_bot_resolved_gen = g_bot->generation();
   g_bot_resolved = true;
@@ -147,6 +161,29 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
 
   CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
                      *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, *g_bot, *g_news, pub_key, now_ts};
+  return processCommand(ctx, input, out, out_cap);
+}
+
+size_t handleSerialAdminCommand(const char* input, char* out, size_t out_cap) {
+  if (out_cap > 0) out[0] = 0;
+  if (g_users == nullptr || out_cap == 0) return 0;
+
+  // Si agisce come il primo amministratore registrato (non di sistema): la
+  // console seriale e' gia' un canale amministrativo (export/import/erase).
+  uint8_t admin_key[BBS_PUBKEY_LEN];
+  bool found = false;
+  for (UserId id = 0; id < g_users->count() && !found; id++) {
+    if (g_users->isSystemUser(id) || g_users->getRole(id) != ROLE_ADMIN) continue;
+    found = g_users->getPubkey(id, admin_key);
+  }
+  if (!found) {
+    copyCString(out, "Nessun amministratore registrato.", out_cap);
+    return strlen(out);
+  }
+
+  uint32_t now_ts = g_clock->nowUnique();
+  CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
+                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, *g_bot, *g_news, admin_key, now_ts};
   return processCommand(ctx, input, out, out_cap);
 }
 
@@ -257,10 +294,39 @@ int newsIngest(const uint8_t* payload, size_t len, const char** name) {
   bool clock_valid = now >= kDigestMinValidEpoch;
   // nowUnique(): due news nello stesso secondo non devono avere lo stesso
   // timestamp, altrimenti il cursore "ultimo letto" ne salterebbe una.
+  char posted[BBS_MAX_TEXT_LEN + 1];
   NewsIngestResult r = ingestNews(*g_news, *g_news_seen, *g_posts, *g_room_registry, *g_users, g_system_user,
-                                  (const char*)payload, len, g_clock->nowUnique(), clock_valid);
+                                  (const char*)payload, len, g_clock->nowUnique(), clock_valid, posted);
+  if (r == NewsIngestResult::OK && g_news->get().channel_enabled) g_news_queue.push(posted);
   if (name != nullptr) *name = newsResultName(r);
   return (int)r;
+}
+
+bool newsPollBroadcast(char* text, size_t text_cap, mesh::GroupChannel& ch, unsigned long now_ms) {
+  if (g_news == nullptr || text_cap == 0) return false;
+  const NewsSettings& s = g_news->get();
+
+  if (!s.channel_enabled) {
+    g_news_queue.clear();
+    g_news_channel_on = false;
+    return false;
+  }
+  if (!g_news_resolved || g_news_resolved_gen != g_news->generation()) {
+    // Cambio di canale (o riattivazione): le news in attesa erano per un altro.
+    bool same = g_news_channel_on && strcmp(g_news_channel_src.name, s.channel.name) == 0 &&
+                g_news_channel_src.psk_len == s.channel.psk_len &&
+                memcmp(g_news_channel_src.psk, s.channel.psk, sizeof(s.channel.psk)) == 0;
+    if (!same) g_news_queue.clear();
+    g_news_channel_src = s.channel;
+    g_news_channel_on = true;
+    resolveChannel(s.channel, g_news_channel);
+    g_news_resolved_gen = g_news->generation();
+    g_news_resolved = true;
+  }
+
+  if (!g_news_queue.poll((uint32_t)now_ms, text, text_cap)) return false;
+  ch = g_news_channel;
+  return true;
 }
 
 namespace {

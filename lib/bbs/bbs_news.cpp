@@ -10,11 +10,13 @@ namespace bbs {
 
 namespace {
 
-constexpr uint8_t kNewsFileVersion = 1;
-// version, enabled, port(2), server[64], username[32], password[32], topic[64],
+constexpr uint8_t kNewsFileVersion = 2;
+// v1: version, enabled, port(2), server[64], username[32], password[32], topic[64],
 // key_len, key[32], room_id
-constexpr size_t kNewsFileSize =
+constexpr size_t kNewsFileSizeV1 =
     1 + 1 + 2 + kNewsServerLen + kNewsUserLen + kNewsPassLen + kNewsTopicLen + 1 + kNewsKeyMaxLen + 1;
+// v2: come v1, poi channel_enabled, channel.name[24], channel.psk_len, channel.psk[32]
+constexpr size_t kNewsFileSize = kNewsFileSizeV1 + 1 + kBotNameLen + 1 + kBotPskMaxLen;
 
 constexpr uint8_t kSeenFileVersion = 1;
 // version, count, head, hash[64][8]
@@ -96,8 +98,20 @@ int hexVal(char c) {
 
 NewsSettings::NewsSettings()
     : enabled(false), server{}, port(kNewsDefaultPort), username{}, password{}, topic{}, key{}, key_len(0),
-      room_id(kNoRoom) {
+      room_id(kNoRoom), channel(), channel_enabled(false) {
   strcpy(topic, kNewsDefaultTopic);
+}
+
+bool newsChannelValid(const NewsSettings& s) {
+  const BotChannel& c = s.channel;
+  if (c.name[kBotNameLen - 1] != 0) return false;
+  if (c.psk_len != 0 && c.psk_len != 16 && c.psk_len != 32) return false;
+  if (c.name[0] == 0) return !s.channel_enabled && c.psk_len == 0;
+  if (c.psk_len == 0) {
+    char norm[kBotNameLen];
+    return normalizeHashtagName(c.name, norm, sizeof(norm)) && strcmp(norm, c.name) == 0;
+  }
+  return isValidKeyedName(c.name);
 }
 
 const char* newsResultName(NewsIngestResult r) {
@@ -130,7 +144,10 @@ void NewsStore::load() {
   uint8_t buf[kNewsFileSize];
   size_t n = f->read(buf, sizeof(buf));
   f->close();
-  if (n != sizeof(buf) || buf[0] != kNewsFileVersion) return;
+  // v1 (senza canale) resta leggibile: tutti i campi si conservano e il
+  // canale resta spento; al prossimo salvataggio il file diventa v2.
+  bool v1 = (n == kNewsFileSizeV1 && buf[0] == 1);
+  if (!v1 && (n != sizeof(buf) || buf[0] != kNewsFileVersion)) return;
 
   NewsSettings s;
   size_t o = 1;
@@ -149,8 +166,17 @@ void NewsStore::load() {
   memcpy(s.key, &buf[o], kNewsKeyMaxLen);
   o += kNewsKeyMaxLen;
   s.room_id = buf[o++];
+  if (!v1) {
+    s.channel_enabled = buf[o++] != 0;
+    memcpy(s.channel.name, &buf[o], kBotNameLen);
+    o += kBotNameLen;
+    s.channel.psk_len = buf[o++];
+    memcpy(s.channel.psk, &buf[o], kBotPskMaxLen);
+    o += kBotPskMaxLen;
+  }
 
   if (s.port == 0) return;
+  if (!newsChannelValid(s)) return;
   if (!terminated(s.server, sizeof(s.server)) || !terminated(s.username, sizeof(s.username)) ||
       !terminated(s.password, sizeof(s.password)) || !terminated(s.topic, sizeof(s.topic))) {
     return;
@@ -165,6 +191,7 @@ bool NewsStore::save(const NewsSettings& s) {
   if (s.port == 0 || s.topic[0] == 0) return false;
   if (s.key_len != 0 && (s.key_len < kNewsKeyMinLen || s.key_len > kNewsKeyMaxLen)) return false;
   if (s.room_id != kNoRoom && s.room_id >= BBS_MAX_ROOMS) return false;
+  if (!newsChannelValid(s)) return false;
 
   uint8_t buf[kNewsFileSize];
   memset(buf, 0, sizeof(buf));
@@ -185,6 +212,12 @@ bool NewsStore::save(const NewsSettings& s) {
   memcpy(&buf[o], s.key, kNewsKeyMaxLen);
   o += kNewsKeyMaxLen;
   buf[o++] = s.room_id;
+  buf[o++] = s.channel_enabled ? 1 : 0;
+  memcpy(&buf[o], s.channel.name, kBotNameLen);
+  o += kBotNameLen;
+  buf[o++] = s.channel.psk_len;
+  memcpy(&buf[o], s.channel.psk, kBotPskMaxLen);
+  o += kBotPskMaxLen;
 
   if (!writeFileAtomically(_fs, _path, buf, sizeof(buf))) return false;
 
@@ -350,7 +383,7 @@ bool verifyNews(const NewsMessage& msg, const uint8_t* key, size_t key_len) {
 
 NewsIngestResult ingestNews(NewsStore& news, NewsSeen& seen, PostStore& posts, RoomRegistry& rooms,
                             UserStore& users, UserId system_user, const char* payload, size_t len,
-                            uint32_t now_ts, bool clock_valid) {
+                            uint32_t now_ts, bool clock_valid, char* posted_text) {
   auto done = [&](NewsIngestResult r) {
     news.recordResult(r, now_ts);
     return r;
@@ -385,6 +418,7 @@ NewsIngestResult ingestNews(NewsStore& news, NewsSeen& seen, PostStore& posts, R
   if (!posts.appendPost(s.room_id, system_user, now_ts, text)) return done(NewsIngestResult::IO_ERROR);
   posts.enforceRetention(s.room_id, BBS_MAX_POSTS_PER_ROOM);
   seen.add(msg.id);
+  if (posted_text != nullptr) memcpy(posted_text, text, text_len + 1);
   return done(NewsIngestResult::OK);
 }
 

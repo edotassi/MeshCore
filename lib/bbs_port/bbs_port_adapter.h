@@ -36,6 +36,12 @@ void setNodeIdentity(const uint8_t pub_key[32]);
 // (0 se non c'e' risposta o se init() non e' ancora stato chiamato).
 size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* out, size_t out_cap);
 
+// Comando BBS dalla console seriale ("bbs <comando>"), eseguito come il primo
+// amministratore registrato. Da chiamare SOLO dalla console seriale (mai
+// raggiungibile dalla mesh LoRa), come exportToSerial(). Risposta
+// null-terminata in 'out'; ritorna la lunghezza.
+size_t handleSerialAdminCommand(const char* input, char* out, size_t out_cap);
+
 // Chiamata periodicamente da MyMesh::loop() (ogni ~30 secondi). Ritorna true
 // se va inviato ora il riepilogo giornaliero (o uno richiesto con DIGEST
 // NOW): il testo, SENZA prefisso mittente (al massimo text_cap-1 byte), e'
@@ -94,6 +100,16 @@ void newsSetConnected(bool connected);
 // (bbs::NewsIngestResult come intero, 0 = accodata), -1 se init() non e' ancora stato
 // chiamato. 'name' (se non nullptr) riceve il nome testuale dell'esito.
 int newsIngest(const uint8_t* payload, size_t len, const char** name = nullptr);
+
+// Trasmissione sul canale di gruppo delle news accettate (vedi
+// bbs_news_broadcast.h). Se c'e' una news in coda, il canale e' abilitato e
+// sono passati almeno 30 s dall'ultima trasmissione (la prima e' immediata),
+// la toglie dalla coda, ne copia "[fonte] titolo" in 'text' (al piu'
+// text_cap-1 byte, troncata su un confine UTF-8), mette in 'ch' il canale con
+// la chiave gia' risolta (anche hashtag) e ritorna true. Se il canale e'
+// disattivato o e' cambiato dall'ultima chiamata la coda viene scartata.
+// 'now_ms' e' millis().
+bool newsPollBroadcast(char* text, size_t text_cap, mesh::GroupChannel& ch, unsigned long now_ms);
 
 // Dump testuale (stanze, utenti, post) su Serial, per un backup leggibile
 // prima di un repair/riflash, pensato per essere riletto da importFeedLine()

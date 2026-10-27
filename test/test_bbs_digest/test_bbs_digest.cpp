@@ -37,6 +37,24 @@ void makeKey(uint8_t out[BBS_PUBKEY_LEN], uint8_t seed) {
 
 // --- base64 ---
 
+TEST(BbsDigestKey, DecodesHexAndBase64) {
+  uint8_t out[32];
+  // Public PSK in esadecimale (come lo mostrano le app) e in base64.
+  ASSERT_EQ(decodeKey("8b3387e9c5cdea6ac9e5edbaa115cd72", out, sizeof(out)), 16u);
+  uint8_t b64[32];
+  ASSERT_EQ(decodeKey("izOH6cXN6mrJ5e26oRXNcg==", b64, sizeof(b64)), 16u);
+  EXPECT_EQ(memcmp(out, b64, 16), 0);
+  ASSERT_EQ(decodeKey("8B3387E9C5CDEA6AC9E5EDBAA115CD72", out, sizeof(out)), 16u);
+  EXPECT_EQ(memcmp(out, b64, 16), 0);
+  std::string hex64(64, 'a');
+  ASSERT_EQ(decodeKey(hex64.c_str(), out, sizeof(out)), 32u);
+  EXPECT_EQ(out[31], 0xaa);
+  // 31 cifre: non e' hex, letta come base64 da' 23 byte, che i chiamanti rifiutano.
+  size_t n31 = decodeKey("8b3387e9c5cdea6ac9e5edbaa115cd7", out, sizeof(out));
+  EXPECT_TRUE(n31 != 16 && n31 != 32);
+  EXPECT_EQ(decodeKey(hex64.c_str(), out, 16), 0u);  // non entra
+}
+
 TEST(BbsDigestBase64, DecodesPublicPsk) {
   uint8_t out[32];
   ASSERT_EQ(base64Decode(kDigestPublicPskBase64, out, sizeof(out)), 16u);

@@ -1153,7 +1153,7 @@ TEST(BbsCommandParser, NewsIsAdminOnly) {
   f.run(admin, "REGISTER capon");
   f.run(user, "REGISTER utenten");
   for (const char* cmd : {"NEWS", "NEWS ON", "NEWS SERVER x.it", "NEWS USER a b", "NEWS KEY AAAAAAAAAAAAAAAAAAAAAA==",
-                          "NEWS ROOM 1", "NEWS boh"}) {
+                          "NEWS ROOM 1", "NEWS CHANNEL #news", "NEWS boh"}) {
     EXPECT_EQ(f.run(user, cmd), std::string(strings::kPermissionDenied)) << cmd;
   }
   EXPECT_FALSE(f.news.get().enabled);
@@ -1165,7 +1165,7 @@ TEST(BbsCommandParser, NewsStatusAndOnOff) {
   uint8_t admin[BBS_PUBKEY_LEN];
   makeKey(admin, 142);
   f.run(admin, "REGISTER capon");
-  EXPECT_EQ(f.run(admin, "NEWS"), "News: disattivate, -:1883, topic bbs/news, stanza -, chiave no, non connesso, ricevute 0.");
+  EXPECT_EQ(f.run(admin, "NEWS"), "News disattivate, canale nessuno, stanza -, chiave no, non connesso, ric. 0, -:1883, topic bbs/news.");
   EXPECT_EQ(f.run(admin, "news on"), std::string(strings::kNewsOnOk));
   EXPECT_TRUE(f.news.get().enabled);
   EXPECT_EQ(f.run(admin, "NEWS OFF"), std::string(strings::kNewsOffOk));
@@ -1199,9 +1199,59 @@ TEST(BbsCommandParser, NewsConfigurationAndStatusNeverShowsSecrets) {
 
   f.news.setConnected(true);
   std::string st = f.run(admin, "NEWS");
-  EXPECT_EQ(st, "News: disattivate, broker.example.org:1883, topic casa/news, stanza News, chiave si, connesso, ricevute 0.");
+  EXPECT_EQ(st, "News disattivate, canale nessuno, stanza News, chiave si, connesso, ric. 0, broker.example.org:1883, topic casa/news.");
   EXPECT_LE(st.size(), BBS_MAX_TEXT_LEN);
   EXPECT_EQ(st.find("segretissima"), std::string::npos);
+}
+
+TEST(BbsCommandParser, NewsChannelCommand) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 150);
+  f.run(admin, "REGISTER capon");
+  uint32_t gen = f.news.generation();
+
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL"), std::string(strings::kNewsChannelUsage));
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL privato"), std::string(strings::kNewsChannelUsage));
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL #Bad_Name"), std::string(strings::kBotBadName));
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL privato AAAA"), std::string(strings::kDigestBadPsk));
+  EXPECT_FALSE(f.news.get().channel_enabled);
+  EXPECT_EQ(f.news.generation(), gen);
+
+  EXPECT_EQ(f.run(admin, "news channel #News"), "Le news saranno trasmesse sul canale #news (una ogni 30 s).");
+  EXPECT_TRUE(f.news.get().channel_enabled);
+  EXPECT_STREQ(f.news.get().channel.name, "#news");
+  EXPECT_EQ(f.news.get().channel.psk_len, 0);
+  EXPECT_NE(f.run(admin, "NEWS").find("canale #news,"), std::string::npos);
+
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL privato AAECAwQFBgcICQoLDA0ODw=="),
+            "Le news saranno trasmesse sul canale privato (una ogni 30 s).");
+  EXPECT_EQ(f.news.get().channel.psk_len, 16);
+  EXPECT_EQ(f.news.get().channel.psk[15], 0x0f);
+
+  EXPECT_EQ(f.run(admin, "NEWS CHANNEL off"), std::string(strings::kNewsChannelOff));
+  EXPECT_FALSE(f.news.get().channel_enabled);
+  EXPECT_NE(f.run(admin, "NEWS").find("canale nessuno,"), std::string::npos);
+}
+
+TEST(BbsCommandParser, NewsStatusWorstCaseFitsAndKeepsChannel) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 151);
+  f.run(admin, "REGISTER capon");
+  f.run(admin, "ROOM ADD Notiziario12345");
+  std::string host(63, 'h');
+  std::string topic(63, 't');
+  f.run(admin, ("NEWS SERVER " + host + " 65535").c_str());
+  f.run(admin, ("NEWS TOPIC " + topic).c_str());
+  f.run(admin, "NEWS KEY AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=");
+  f.run(admin, "NEWS ROOM 3");
+  f.run(admin, "NEWS CHANNEL abcdefghijklmnopqrstuvw AAECAwQFBgcICQoLDA0ODw==");
+  f.news.setConnected(false);
+  std::string st = f.run(admin, "NEWS");
+  EXPECT_LE(st.size(), BBS_MAX_TEXT_LEN);
+  EXPECT_NE(st.find("canale abcdefghijklmnopqrstuvw, stanza "), std::string::npos) << st;
+  EXPECT_NE(st.find("non connesso, ric. 0, hhh"), std::string::npos) << st;
 }
 
 TEST(BbsCommandParser, NewsUserDashClearsCredentials) {

@@ -270,6 +270,121 @@ TEST(BbsNewsStore, CorruptOrWrongVersionFileFallsBackToDefaults) {
   }
 }
 
+TEST(BbsNewsStore, ChannelDefaultsOffAndPersists) {
+  FakeFileSystem fs;
+  {
+    NewsStore store(fs);
+    EXPECT_FALSE(store.get().channel_enabled);
+    EXPECT_STREQ(store.get().channel.name, "");
+    NewsSettings s = store.get();
+    strcpy(s.channel.name, "#news");
+    s.channel.psk_len = 0;
+    s.channel_enabled = true;
+    ASSERT_TRUE(store.save(s));
+  }
+  {
+    NewsStore store(fs);
+    EXPECT_TRUE(store.get().channel_enabled);
+    EXPECT_STREQ(store.get().channel.name, "#news");
+    EXPECT_TRUE(store.get().channel.isHashtag());
+    NewsSettings s = store.get();
+    strcpy(s.channel.name, "privato");
+    for (size_t i = 0; i < 16; i++) s.channel.psk[i] = (uint8_t)(i + 1);
+    s.channel.psk_len = 16;
+    ASSERT_TRUE(store.save(s));
+  }
+  NewsStore store(fs);
+  EXPECT_STREQ(store.get().channel.name, "privato");
+  EXPECT_EQ(store.get().channel.psk_len, 16);
+  EXPECT_EQ(store.get().channel.psk[15], 16);
+}
+
+TEST(BbsNewsStore, RejectsInvalidChannelOnSave) {
+  FakeFileSystem fs;
+  NewsStore store(fs);
+  NewsSettings s = store.get();
+  s.channel_enabled = true;  // abilitato senza nome
+  EXPECT_FALSE(store.save(s));
+  strcpy(s.channel.name, "#Maiuscole");  // hashtag non normalizzato
+  EXPECT_FALSE(store.save(s));
+  strcpy(s.channel.name, "#news");
+  s.channel.psk_len = 7;
+  EXPECT_FALSE(store.save(s));
+  s.channel.psk_len = 16;  // chiave con nome hashtag
+  EXPECT_FALSE(store.save(s));
+  strcpy(s.channel.name, "privato");
+  s.channel.psk_len = 0;  // nome con chiave ma senza chiave
+  EXPECT_FALSE(store.save(s));
+  EXPECT_EQ(store.generation(), 0u);
+}
+
+TEST(BbsNewsStore, LoadsVersion1FileKeepingFieldsAndChannelOff) {
+  FakeFileSystem fs;
+  // File v1 costruito a mano: version, enabled, port(2), server[64], username[32],
+  // password[32], topic[64], key_len, key[32], room_id.
+  uint8_t buf[1 + 1 + 2 + 64 + 32 + 32 + 64 + 1 + 32 + 1];
+  memset(buf, 0, sizeof(buf));
+  size_t o = 0;
+  buf[o++] = 1;
+  buf[o++] = 1;
+  buf[o++] = 0xB3;  // 8883 little-endian
+  buf[o++] = 0x22;
+  strcpy((char*)&buf[o], "broker.example.org");
+  o += 64;
+  strcpy((char*)&buf[o], "bbs");
+  o += 32;
+  strcpy((char*)&buf[o], "pw");
+  o += 32;
+  strcpy((char*)&buf[o], "x/y");
+  o += 64;
+  buf[o++] = 24;
+  for (size_t i = 0; i < 32; i++) buf[o + i] = (uint8_t)i;
+  o += 32;
+  buf[o++] = 3;
+  ASSERT_EQ(o, sizeof(buf));
+  IFile* w = fs.open("/bbs/news.dat", 'w');
+  w->write(buf, sizeof(buf));
+  w->close();
+
+  NewsStore store(fs);
+  const NewsSettings& s = store.get();
+  EXPECT_TRUE(s.enabled);
+  EXPECT_EQ(s.port, 8883);
+  EXPECT_STREQ(s.server, "broker.example.org");
+  EXPECT_STREQ(s.username, "bbs");
+  EXPECT_STREQ(s.password, "pw");
+  EXPECT_STREQ(s.topic, "x/y");
+  EXPECT_EQ(s.key_len, 24);
+  EXPECT_EQ(s.key[23], 23);
+  EXPECT_EQ(s.room_id, 3);
+  EXPECT_FALSE(s.channel_enabled);
+  EXPECT_STREQ(s.channel.name, "");
+
+  // Il primo salvataggio riscrive il file in v2 e lo si rilegge uguale.
+  NewsSettings n = s;
+  strcpy(n.channel.name, "#news");
+  n.channel_enabled = true;
+  ASSERT_TRUE(store.save(n));
+  NewsStore store2(fs);
+  EXPECT_STREQ(store2.get().server, "broker.example.org");
+  EXPECT_EQ(store2.get().room_id, 3);
+  EXPECT_TRUE(store2.get().channel_enabled);
+  EXPECT_STREQ(store2.get().channel.name, "#news");
+}
+
+TEST(BbsNewsIngest, PostedTextIsReturnedOnOk) {
+  Fixture f;
+  char posted[BBS_MAX_TEXT_LEN + 1];
+  std::string p = makePayload("id1", "1793091600", "ANSA", "Titolo di prova");
+  EXPECT_EQ(ingestNews(f.news, f.seen, f.posts, f.rooms, f.users, f.sys, p.data(), p.size(), kNow, true, posted),
+            NewsIngestResult::OK);
+  EXPECT_STREQ(posted, "[ANSA] Titolo di prova");
+  posted[0] = 'x';
+  EXPECT_EQ(ingestNews(f.news, f.seen, f.posts, f.rooms, f.users, f.sys, p.data(), p.size(), kNow, true, posted),
+            NewsIngestResult::DUPLICATE);
+  EXPECT_EQ(posted[0], 'x');
+}
+
 // --- Anti doppioni ---
 
 TEST(BbsNewsSeen, ContainsAddAndPersist) {

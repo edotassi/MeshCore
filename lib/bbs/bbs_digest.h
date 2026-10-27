@@ -34,6 +34,12 @@ constexpr const char* kDigestPublicPskBase64 = "izOH6cXN6mrJ5e26oRXNcg==";
 // valido o non entra in 'out_cap'. Senza allocazioni.
 size_t base64Decode(const char* in, uint8_t* out, size_t out_cap);
 
+// Chiave di canale/PSK come la mostrano le app: esadecimale (32 o 64 cifre,
+// cioe' 16 o 32 byte) oppure base64. Nessuna ambiguita' per le lunghezze
+// ammesse: 32/64 caratteri in base64 darebbero 24/48 byte. Ritorna i byte
+// decodificati, 0 se non valida o se non entra in out_cap.
+size_t decodeKey(const char* in, uint8_t* out, size_t out_cap);
+
 struct DigestSettings {
   bool enabled;
   uint8_t hour;            // ora locale, 0-23

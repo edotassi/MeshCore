@@ -156,10 +156,10 @@ constexpr const char* kDigestNever = "mai";
 constexpr const char* kDigestDateFmt = "%04d-%02u-%02u";
 
 constexpr const char* kDigestUsage =
-    "Usa: DIGEST [ON|OFF|TIME HH:MM|TZ +H[:MM]|DST ON|OFF|CHANNEL PUBLIC|<psk base64>|NOW].";
+    "Usa: DIGEST [ON|OFF|TIME HH:MM|TZ +H[:MM]|DST ON|OFF|CHANNEL PUBLIC|<psk>|NOW].";
 constexpr const char* kDigestBadTime = "Ora non valida. Usa: DIGEST TIME HH:MM (00:00-23:59).";
 constexpr const char* kDigestBadTz = "Fuso non valido. Usa: DIGEST TZ +H[:MM], da -12:00 a +14:00.";
-constexpr const char* kDigestBadPsk = "Chiave non valida: serve una PSK base64 di 16 o 32 byte.";
+constexpr const char* kDigestBadPsk = "Chiave non valida: serve una PSK di 16 o 32 byte (esadecimale o base64).";
 constexpr const char* kDigestSaveFailed = "Impossibile salvare il riepilogo (errore di scrittura).";
 constexpr const char* kDigestOnOk = "Riepilogo giornaliero attivato.";
 constexpr const char* kDigestOffOk = "Riepilogo giornaliero disattivato.";
@@ -177,7 +177,7 @@ constexpr const char* kBotStatusFmt = "Bot: %s, canali: %s.";
 constexpr const char* kBotStatusOn = "attivo";
 constexpr const char* kBotStatusOff = "disattivato";
 constexpr const char* kBotNoChannels = "nessuno";
-constexpr const char* kBotUsage = "Usa: BOT [ON|OFF|CHANNEL ADD #nome|PUBLIC|<nome> <psk base64>|CHANNEL DEL <nome>].";
+constexpr const char* kBotUsage = "Usa: BOT [ON|OFF|CHANNEL ADD #nome|PUBLIC|<nome> <psk>|CHANNEL DEL <nome>].";
 constexpr const char* kBotOnOk = "Bot attivato.";
 constexpr const char* kBotOffOk = "Bot disattivato.";
 // Format string: nome del canale.
@@ -199,9 +199,12 @@ constexpr const char* kBotReplyHopsFmt = "] ricevuto con %u hop via ";
 constexpr const char* kBotNewsNone = "nessuna news disponibile";
 
 // News da MQTT (NEWS, solo amministratore).
-// Format string per snprintf dello stato: attive/disattivate, server, porta,
-// topic, stanza, chiave impostata, connessione, news ricevute.
-constexpr const char* kNewsStatusFmt = "News: %s, %s:%u, topic %s, stanza %s, chiave %s, %s, ricevute %u.";
+// Format string per snprintf dello stato: attive/disattivate,
+// canale di trasmissione, stanza, chiave impostata, connessione, news
+// ricevute, server, porta, topic. Server e topic (i campi piu' lunghi) stanno
+// in fondo: se la riga supera il limite si accorciano loro.
+constexpr const char* kNewsStatusFmt = "News %s, canale %s, stanza %s, chiave %s, %s, ric. %u, %s:%u, topic %s.";
+constexpr const char* kNewsNoChannel = "nessuno";
 constexpr const char* kNewsStatusOn = "attive";
 constexpr const char* kNewsStatusOff = "disattivate";
 constexpr const char* kNewsNotSet = "-";
@@ -211,13 +214,13 @@ constexpr const char* kNewsConnected = "connesso";
 constexpr const char* kNewsNotConnected = "non connesso";
 
 constexpr const char* kNewsUsage =
-    "Usa: NEWS [ON|OFF|SERVER <host> [porta]|USER <utente> <password>|USER -|TOPIC <topic>|KEY <base64>|ROOM <n>].";
+    "Usa: NEWS [ON|OFF|SERVER <host> [porta]|USER <utente> <password>|USER -|TOPIC <topic>|KEY <base64>|ROOM <n>|CHANNEL OFF|#nome|<nome> <psk>].";
 constexpr const char* kNewsOnOk = "News attivate.";
 constexpr const char* kNewsOffOk = "News disattivate.";
 constexpr const char* kNewsBadServer = "Server non valido: usa un nome host (max 63 caratteri) e una porta 1-65535.";
 constexpr const char* kNewsBadUser = "Utente o password non validi: max 31 caratteri ciascuno, senza spazi.";
 constexpr const char* kNewsBadTopic = "Topic non valido: 1-63 caratteri senza spazi.";
-constexpr const char* kNewsBadKey = "Chiave non valida: serve una chiave base64 di 16-32 byte.";
+constexpr const char* kNewsBadKey = "Chiave non valida: serve una chiave di 16-32 byte (esadecimale o base64).";
 constexpr const char* kNewsSaveFailed = "Impossibile salvare le news (errore di scrittura).";
 // Format string per snprintf: host, porta.
 constexpr const char* kNewsServerOkFmt = "Server news impostato: %s:%u.";
@@ -228,6 +231,10 @@ constexpr const char* kNewsTopicOkPrefix = "Topic news impostato: ";
 constexpr const char* kNewsKeyOk = "Chiave news impostata.";
 // Concatenato dal parser con il nome della stanza.
 constexpr const char* kNewsRoomOkPrefix = "Stanza news impostata: ";
+constexpr const char* kNewsChannelUsage = "Usa: NEWS CHANNEL OFF|#nome|<nome> <psk>.";
+constexpr const char* kNewsChannelOff = "Trasmissione news sul canale disattivata.";
+// Format string: nome del canale.
+constexpr const char* kNewsChannelOkFmt = "Le news saranno trasmesse sul canale %s (una ogni 30 s).";
 
 } // namespace strings
 } // namespace bbs

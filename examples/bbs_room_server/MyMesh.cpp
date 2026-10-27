@@ -783,6 +783,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_client_idx = 0;
   next_push = 0;
   next_digest_check = 0;
+#ifdef WITH_BBS_NEWS
+  next_news_broadcast_check = 0;
+#endif
   memset(posts, 0, sizeof(posts));
   _num_posted = _num_post_pushes = 0;
 
@@ -1106,6 +1109,13 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       Serial.printf("\n");
     }
     reply[0] = 0;
+  } else if (sender_timestamp == 0 && memcmp(command, "bbs ", 4) == 0) {
+    // Comando BBS (NEWS, ROOM, BOT, ...) dalla console seriale, come
+    // l'amministratore: solo seriale (sender_timestamp == 0), come export.
+    char out[256];
+    bbs::port::handleSerialAdminCommand(&command[4], out, sizeof(out));
+    Serial.printf("  -> %s\n", out);
+    reply[0] = 0;
   } else if (sender_timestamp == 0 && strcmp(command, "export") == 0) {
     // Backup leggibile di stanze/utenti/post su Serial: solo da console
     // seriale (sender_timestamp == 0, mai raggiungibile dalla mesh LoRa),
@@ -1146,6 +1156,7 @@ bool MyMesh::saveFilter(ClientInfo* client) {
 // MeshCore, 160 byte), prefisso "<nome nodo>: " incluso.
 static const size_t GROUP_MAX_TEXT_LEN = 160;
 static const unsigned long DIGEST_CHECK_INTERVAL_MILLIS = 30000;
+static const unsigned long NEWS_BROADCAST_CHECK_INTERVAL_MILLIS = 1000;
 
 void MyMesh::sendGroupText(const mesh::GroupChannel& ch, const char* text, bool reply_scope, uint32_t delay_millis) {
   // Formato come "public" in simple_secure_chat: timestamp, flags, "<nome>: <testo>".
@@ -1188,6 +1199,20 @@ void MyMesh::sendDigestIfDue() {
 
   sendGroupText(ch, text, false, 0);
 }
+
+#ifdef WITH_BBS_NEWS
+void MyMesh::sendNewsBroadcastIfDue() {
+  size_t name_len = strlen(_prefs.node_name);
+  if (name_len + 2 >= GROUP_MAX_TEXT_LEN) return;  // nome assurdamente lungo: niente spazio per il testo
+  size_t text_cap = GROUP_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+
+  char text[GROUP_MAX_TEXT_LEN + 1];
+  mesh::GroupChannel ch;
+  if (!bbs::port::newsPollBroadcast(text, text_cap, ch, millis())) return;
+
+  sendGroupText(ch, text, false, 0);
+}
+#endif
 
 int MyMesh::searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) {
   return bbs::port::botSearchChannels(hash, channels, max_matches);
@@ -1246,6 +1271,15 @@ void MyMesh::loop() {
     next_digest_check = futureMillis(DIGEST_CHECK_INTERVAL_MILLIS);
     sendDigestIfDue();
   }
+
+#ifdef WITH_BBS_NEWS
+  // News sul canale di gruppo: controllo ogni secondo (il distanziamento di
+  // 30 s tra due invii e' nell'adattatore).
+  if (millisHasNowPassed(next_news_broadcast_check)) {
+    next_news_broadcast_check = futureMillis(NEWS_BROADCAST_CHECK_INTERVAL_MILLIS);
+    sendNewsBroadcastIfDue();
+  }
+#endif
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {
     // check for ACK timeouts

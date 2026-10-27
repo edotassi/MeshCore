@@ -553,7 +553,7 @@ size_t handleDigestCmd(CommandContext& ctx, const char* args, UserId actor, char
       ok_text = strings::kDigestChannelPublicOk;
     } else {
       uint8_t psk[kDigestPskMaxLen];
-      size_t n = base64Decode(tok, psk, sizeof(psk));
+      size_t n = decodeKey(tok, psk, sizeof(psk));
       if (n != 16 && n != 32) return copyOut(strings::kDigestBadPsk, out, out_cap);
       memset(s.psk, 0, sizeof(s.psk));
       memcpy(s.psk, psk, n);
@@ -617,7 +617,7 @@ size_t handleBotCmd(CommandContext& ctx, const char* args, UserId actor, char* o
       } else {
         if (!isValidKeyedName(name)) return copyOut(strings::kBotBadName, out, out_cap);
         uint8_t psk[kBotPskMaxLen];
-        size_t n = base64Decode(psk_tok, psk, sizeof(psk));
+        size_t n = decodeKey(psk_tok, psk, sizeof(psk));
         if (n != 16 && n != 32) return copyOut(strings::kDigestBadPsk, out, out_cap);
         strcpy(c.name, name);
         memcpy(c.psk, psk, n);
@@ -687,9 +687,10 @@ size_t handleNewsCmd(CommandContext& ctx, const char* args, UserId actor, char* 
     const RoomInfo* room = (s.room_id == kNoRoom) ? nullptr : ctx.room_registry.findRoom(s.room_id);
     const NewsStatus& st = ctx.news.status();
     snprintf(buf, sizeof(buf), strings::kNewsStatusFmt, s.enabled ? strings::kNewsStatusOn : strings::kNewsStatusOff,
-             s.server[0] ? s.server : strings::kNewsNotSet, (unsigned)s.port, s.topic,
-             room ? room->name : strings::kNewsNotSet, s.key_len ? strings::kNewsYes : strings::kNewsNo,
-             st.connected ? strings::kNewsConnected : strings::kNewsNotConnected, (unsigned)st.received_ok);
+             s.channel_enabled ? s.channel.name : strings::kNewsNoChannel, room ? room->name : strings::kNewsNotSet,
+             s.key_len ? strings::kNewsYes : strings::kNewsNo,
+             st.connected ? strings::kNewsConnected : strings::kNewsNotConnected, (unsigned)st.received_ok,
+             s.server[0] ? s.server : strings::kNewsNotSet, (unsigned)s.port, s.topic);
     return copyOut(buf, out, out_cap);
   }
 
@@ -741,7 +742,7 @@ size_t handleNewsCmd(CommandContext& ctx, const char* args, UserId actor, char* 
     char tok[64];
     extractToken(rest, tok, sizeof(tok));
     uint8_t key[kNewsKeyMaxLen];
-    size_t n = base64Decode(tok, key, sizeof(key));
+    size_t n = decodeKey(tok, key, sizeof(key));
     if (n < kNewsKeyMinLen || n > kNewsKeyMaxLen) return copyOut(strings::kNewsBadKey, out, out_cap);
     memset(s.key, 0, sizeof(s.key));
     memcpy(s.key, key, n);
@@ -753,6 +754,37 @@ size_t handleNewsCmd(CommandContext& ctx, const char* args, UserId actor, char* 
     s.room_id = room_id;
     copyOut2(strings::kNewsRoomOkPrefix, ctx.room_registry.findRoom(room_id)->name, buf, sizeof(buf));
     ok_text = buf;
+  } else if (strcmp(sub, "CHANNEL") == 0) {
+    char name[48];
+    rest = extractToken(rest, name, sizeof(name));
+    if (name[0] == 0) return copyOut(strings::kNewsChannelUsage, out, out_cap);
+    if (equalsIgnoreCase(name, "OFF")) {
+      s.channel_enabled = false;
+      ok_text = strings::kNewsChannelOff;
+    } else {
+      // Stesse regole di BOT CHANNEL ADD (senza il caso PUBLIC).
+      char psk_tok[64];
+      extractToken(rest, psk_tok, sizeof(psk_tok));
+      BotChannel c;
+      if (name[0] == '#') {
+        if (!normalizeHashtagName(name, c.name, sizeof(c.name))) return copyOut(strings::kBotBadName, out, out_cap);
+        c.psk_len = 0;
+      } else if (psk_tok[0] == 0) {
+        return copyOut(strings::kNewsChannelUsage, out, out_cap);
+      } else {
+        if (!isValidKeyedName(name)) return copyOut(strings::kBotBadName, out, out_cap);
+        uint8_t psk[kBotPskMaxLen];
+        size_t n = decodeKey(psk_tok, psk, sizeof(psk));
+        if (n != 16 && n != 32) return copyOut(strings::kDigestBadPsk, out, out_cap);
+        strcpy(c.name, name);
+        memcpy(c.psk, psk, n);
+        c.psk_len = (uint8_t)n;
+      }
+      s.channel = c;
+      s.channel_enabled = true;
+      snprintf(buf, sizeof(buf), strings::kNewsChannelOkFmt, c.name);
+      ok_text = buf;
+    }
   } else {
     return copyOut(strings::kNewsUsage, out, out_cap);
   }

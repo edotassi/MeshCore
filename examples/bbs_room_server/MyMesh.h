@@ -125,6 +125,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t reply_data[MAX_PACKET_PAYLOAD];
   unsigned long next_push;
   unsigned long next_digest_check;  // prossimo controllo del riepilogo giornaliero BBS
+#ifdef WITH_BBS_NEWS
+  unsigned long next_news_broadcast_check;  // prossimo controllo della coda news da trasmettere sul canale
+#endif
   uint16_t _num_posted, _num_post_pushes;
   int next_client_idx;  // for round-robin polling
   int next_post_idx;
@@ -226,6 +229,9 @@ public:
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
   void sendDigestIfDue();  // riepilogo giornaliero BBS (vedi bbs_port_adapter.h: pollDigest)
+#ifdef WITH_BBS_NEWS
+  void sendNewsBroadcastIfDue();  // news sul canale di gruppo (vedi bbs_port_adapter.h: newsPollBroadcast)
+#endif
   // Invia "<nome nodo>: <text>" come messaggio di gruppo flood sul canale dato.
   // reply_scope: usa lo scope regionale del pacchetto in ricezione (sendFloodReply)
   // invece di quello predefinito; solo da dentro onGroupDataRecv.
