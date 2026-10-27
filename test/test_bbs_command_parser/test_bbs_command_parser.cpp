@@ -28,9 +28,10 @@ struct Fixture {
   RoomState rooms{fs};
   ModLog modlog;
   MotdStore motd{fs};
+  DigestStore digest{fs};
 
   std::string run(const uint8_t* pub_key, const char* input, uint32_t now_ts = 1000) {
-    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, pub_key, now_ts};
+    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, digest, pub_key, now_ts};
     char out[256];
     size_t n = processCommand(ctx, input, out, sizeof(out));
     return std::string(out, n);
@@ -907,6 +908,132 @@ TEST(BbsCommandParser, AllStringsFitInTextBudgetWithNicknameMargin) {
     // posto di %u, caso di fatto mai raggiunto in pratica).
     EXPECT_LE(strlen(s) + 2 * BBS_NICK_LEN, BBS_MAX_TEXT_LEN) << s;
   }
+}
+
+// --- DIGEST ---
+
+TEST(BbsCommandParser, DigestIsAdminOnly) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN], user[BBS_PUBKEY_LEN];
+  makeKey(admin, 120);
+  makeKey(user, 121);
+  f.run(admin, "REGISTER capod");
+  f.run(user, "REGISTER utented");
+  for (const char* cmd : {"DIGEST", "DIGEST ON", "DIGEST OFF", "DIGEST TIME 09:00", "DIGEST TZ +2", "DIGEST DST OFF",
+                          "DIGEST CHANNEL PUBLIC", "DIGEST NOW", "DIGEST boh"}) {
+    EXPECT_EQ(f.run(user, cmd), std::string(strings::kPermissionDenied)) << cmd;
+  }
+  EXPECT_FALSE(f.digest.get().enabled);
+  EXPECT_FALSE(f.digest.takeNowRequest());
+}
+
+TEST(BbsCommandParser, DigestStatusLine) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 122);
+  f.run(admin, "REGISTER capod");
+  EXPECT_EQ(f.run(admin, "DIGEST"),
+            "Riepilogo: disattivato, ore 08:00, fuso +1:00 con ora legale UE, canale Public, ultimo invio mai.");
+
+  f.run(admin, "DIGEST ON");
+  f.run(admin, "digest time 7:05");
+  f.run(admin, "DIGEST TZ -5:30");
+  f.run(admin, "DIGEST DST OFF");
+  f.run(admin, "DIGEST CHANNEL AAAAAAAAAAAAAAAAAAAAAA==");
+  DigestSettings s = f.digest.get();
+  s.last_sent_day = 20468;
+  ASSERT_TRUE(f.digest.save(s));
+  std::string st = f.run(admin, "DIGEST");
+  EXPECT_EQ(st, "Riepilogo: attivo, ore 07:05, fuso -5:30 senza ora legale, canale privato, ultimo invio 2026-01-15.");
+  EXPECT_LE(st.size(), BBS_MAX_TEXT_LEN);
+}
+
+TEST(BbsCommandParser, DigestOnOffTimeTzDst) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 123);
+  f.run(admin, "REGISTER capod");
+
+  EXPECT_EQ(f.run(admin, "DIGEST ON"), std::string(strings::kDigestOnOk));
+  EXPECT_TRUE(f.digest.get().enabled);
+  EXPECT_EQ(f.run(admin, "DIGEST OFF"), std::string(strings::kDigestOffOk));
+  EXPECT_FALSE(f.digest.get().enabled);
+
+  EXPECT_EQ(f.run(admin, "DIGEST TIME 23:59"), "Riepilogo programmato alle 23:59.");
+  EXPECT_EQ(f.digest.get().hour, 23);
+  EXPECT_EQ(f.digest.get().minute, 59);
+  EXPECT_EQ(f.run(admin, "DIGEST TIME 0:00"), "Riepilogo programmato alle 00:00.");
+
+  EXPECT_EQ(f.run(admin, "DIGEST TZ +14"), "Fuso impostato: +14:00.");
+  EXPECT_EQ(f.digest.get().tz_offset_min, 840);
+  EXPECT_EQ(f.run(admin, "DIGEST TZ -12:00"), "Fuso impostato: -12:00.");
+  EXPECT_EQ(f.digest.get().tz_offset_min, -720);
+  EXPECT_EQ(f.run(admin, "DIGEST TZ 5:45"), "Fuso impostato: +5:45.");
+  EXPECT_EQ(f.digest.get().tz_offset_min, 345);
+
+  EXPECT_EQ(f.run(admin, "DIGEST DST OFF"), std::string(strings::kDigestDstOffOk));
+  EXPECT_FALSE(f.digest.get().eu_dst);
+  EXPECT_EQ(f.run(admin, "DIGEST DST on"), std::string(strings::kDigestDstOnOk));
+  EXPECT_TRUE(f.digest.get().eu_dst);
+}
+
+TEST(BbsCommandParser, DigestInvalidArguments) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 124);
+  f.run(admin, "REGISTER capod");
+
+  for (const char* cmd : {"DIGEST TIME", "DIGEST TIME 24:00", "DIGEST TIME 12:60", "DIGEST TIME 1200", "DIGEST TIME 12:5",
+                          "DIGEST TIME ab:cd"}) {
+    EXPECT_EQ(f.run(admin, cmd), std::string(strings::kDigestBadTime)) << cmd;
+  }
+  for (const char* cmd : {"DIGEST TZ", "DIGEST TZ +14:01", "DIGEST TZ -12:01", "DIGEST TZ +15", "DIGEST TZ x",
+                          "DIGEST TZ +1:60", "DIGEST TZ +1:5"}) {
+    EXPECT_EQ(f.run(admin, cmd), std::string(strings::kDigestBadTz)) << cmd;
+  }
+  EXPECT_EQ(f.run(admin, "DIGEST DST"), std::string(strings::kDigestUsage));
+  EXPECT_EQ(f.run(admin, "DIGEST DST MAYBE"), std::string(strings::kDigestUsage));
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL"), std::string(strings::kDigestUsage));
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL %%%"), std::string(strings::kDigestBadPsk));
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL AAAA"), std::string(strings::kDigestBadPsk));  // 3 byte
+  EXPECT_EQ(f.run(admin, "DIGEST FOO"), std::string(strings::kDigestUsage));
+  // Nulla e' cambiato.
+  EXPECT_EQ(f.digest.get().hour, 8);
+  EXPECT_EQ(f.digest.get().tz_offset_min, 60);
+  EXPECT_TRUE(f.digest.get().usesPublicPsk());
+}
+
+TEST(BbsCommandParser, DigestChannel) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 125);
+  f.run(admin, "REGISTER capod");
+
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL AAAAAAAAAAAAAAAAAAAAAA=="), std::string(strings::kDigestChannelPrivateOk));
+  EXPECT_FALSE(f.digest.get().usesPublicPsk());
+  EXPECT_EQ(f.digest.get().psk_len, 16);
+
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            std::string(strings::kDigestChannelPrivateOk));
+  EXPECT_EQ(f.digest.get().psk_len, 32);
+
+  EXPECT_EQ(f.run(admin, "DIGEST CHANNEL public"), std::string(strings::kDigestChannelPublicOk));
+  EXPECT_TRUE(f.digest.get().usesPublicPsk());
+  // Il PSK non compare mai nello stato.
+  std::string st = f.run(admin, "DIGEST");
+  EXPECT_NE(st.find("canale Public"), std::string::npos);
+}
+
+TEST(BbsCommandParser, DigestNowSetsPendingFlagOnly) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 126);
+  f.run(admin, "REGISTER capod");
+  EXPECT_EQ(f.run(admin, "DIGEST NOW"), std::string(strings::kDigestNowOk));
+  EXPECT_FALSE(f.digest.get().enabled);
+  EXPECT_EQ(f.digest.get().last_sent_day, 0u);
+  EXPECT_TRUE(f.digest.takeNowRequest());
+  EXPECT_FALSE(f.digest.takeNowRequest());
 }
 
 int main(int argc, char** argv) {

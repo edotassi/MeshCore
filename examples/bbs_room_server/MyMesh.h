@@ -120,6 +120,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   unsigned long dirty_contacts_expiry;
   uint8_t reply_data[MAX_PACKET_PAYLOAD];
   unsigned long next_push;
+  unsigned long next_digest_check;  // prossimo controllo del riepilogo giornaliero BBS
   uint16_t _num_posted, _num_post_pushes;
   int next_client_idx;  // for round-robin polling
   int next_post_idx;
@@ -215,6 +216,7 @@ public:
   }
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
+  void sendDigestIfDue();  // riepilogo giornaliero BBS (vedi bbs_port_adapter.h: pollDigest)
 
   // CommonCLICallbacks
   void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;

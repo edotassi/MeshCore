@@ -779,6 +779,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_post_idx = 0;
   next_client_idx = 0;
   next_push = 0;
+  next_digest_check = 0;
   memset(posts, 0, sizeof(posts));
   _num_posted = _num_post_pushes = 0;
 
@@ -1132,6 +1133,45 @@ bool MyMesh::saveFilter(ClientInfo* client) {
   return client->isAdmin();    // only save Admins
 }
 
+// Lunghezza massima del testo di un messaggio di gruppo (MAX_TEXT_LEN di
+// MeshCore, 160 byte), prefisso "<nome nodo>: " incluso.
+static const size_t DIGEST_MAX_TEXT_LEN = 160;
+static const unsigned long DIGEST_CHECK_INTERVAL_MILLIS = 30000;
+
+void MyMesh::sendDigestIfDue() {
+  size_t name_len = strlen(_prefs.node_name);
+  if (name_len + 2 >= DIGEST_MAX_TEXT_LEN) return;  // nome assurdamente lungo: niente spazio per il testo
+  size_t text_cap = DIGEST_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+
+  char text[DIGEST_MAX_TEXT_LEN + 1];
+  uint8_t psk[32];
+  size_t psk_len = 0;
+  if (!bbs::port::pollDigest(text, text_cap, psk, psk_len)) return;
+
+  // Stesso canale di gruppo che BaseChatMesh::addChannel costruirebbe da una PSK.
+  mesh::GroupChannel ch;
+  memset(ch.secret, 0, sizeof(ch.secret));
+  memcpy(ch.secret, psk, psk_len);
+  mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, psk_len);
+
+  // Formato come "public" in simple_secure_chat: timestamp, flags, "<nome>: <testo>".
+  uint8_t temp[5 + DIGEST_MAX_TEXT_LEN + 1];
+  uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
+  memcpy(temp, &timestamp, 4);
+  temp[4] = 0;
+  int len = snprintf((char *)&temp[5], DIGEST_MAX_TEXT_LEN + 1, "%s: %s", _prefs.node_name, text);
+  if (len <= 0) return;
+  if ((size_t)len > DIGEST_MAX_TEXT_LEN) len = DIGEST_MAX_TEXT_LEN;
+
+  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, ch, temp, 5 + len);
+  if (pkt) {
+    sendFloodScoped(default_scope, pkt, 0, _prefs.path_hash_mode + 1);
+    MESH_DEBUG_PRINTLN("BBS digest sent (%d bytes)", len);
+  } else {
+    MESH_DEBUG_PRINTLN("BBS digest: createGroupDatagram failed");
+  }
+}
+
 void MyMesh::loop() {
   mesh::Mesh::loop();
 #if defined(WITH_BRIDGE)
@@ -1143,6 +1183,13 @@ void MyMesh::loop() {
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
   wormhole.loop();
 #endif
+
+  // Riepilogo giornaliero BBS: controllo ogni 30 secondi (la logica di
+  // quando inviare e' nell'adattatore, vedi bbs_port_adapter.h).
+  if (millisHasNowPassed(next_digest_check)) {
+    next_digest_check = futureMillis(DIGEST_CHECK_INTERVAL_MILLIS);
+    sendDigestIfDue();
+  }
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {
     // check for ACK timeouts

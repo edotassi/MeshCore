@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "../bbs/bbs_command_parser.h"
+#include "../bbs/bbs_digest.h"
 #include "../bbs/bbs_mail_store.h"
 #include "../bbs/bbs_mod_log.h"
 #include "../bbs/bbs_motd.h"
@@ -14,6 +15,7 @@
 #include "../bbs/bbs_room_registry.h"
 #include "../bbs/bbs_room_state.h"
 #include "../bbs/bbs_session_table.h"
+#include "../bbs/bbs_strings_it.h"
 #include "../bbs/bbs_user_store.h"
 #include "bbs_port_clock.h"
 #include "bbs_port_littlefs.h"
@@ -35,6 +37,7 @@ RoomState* g_rooms = nullptr;
 RoomRegistry* g_room_registry = nullptr;
 ModLog* g_modlog = nullptr;
 MotdStore* g_motd = nullptr;
+DigestStore* g_digest = nullptr;
 
 } // namespace
 
@@ -63,6 +66,7 @@ void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channe
   g_notifier = new Notifier(*g_users, *g_sessions, *g_room_registry, *g_posts, *reply_channel);
   g_modlog = new ModLog();
   g_motd = new MotdStore(*g_fs);
+  g_digest = new DigestStore(*g_fs);
 
   for (size_t i = 0; i < g_room_registry->count(); i++) {
     g_posts->repairRoom(g_room_registry->at(i).id);
@@ -84,8 +88,45 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
   g_notifier->tick(now_ts);
 
   CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
-                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, pub_key, now_ts};
+                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, pub_key, now_ts};
   return processCommand(ctx, input, out, out_cap);
+}
+
+bool pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len) {
+  if (g_digest == nullptr || text_cap == 0) return false;
+
+  // Richiesta manuale (DIGEST NOW): parte comunque, anche se disattivato o
+  // senza post, e non tocca last_sent_day.
+  bool send = false;
+  uint32_t now = g_clock->now();
+  if (g_digest->takeNowRequest()) {
+    if (formatDigest(*g_posts, *g_room_registry, now, text, text_cap) == 0) {
+      strncpy(text, strings::kDigestNoPosts, text_cap - 1);
+      text[text_cap - 1] = 0;
+    }
+    send = true;
+  } else {
+    DigestDecision d = decide(g_digest->get(), now);
+    if (d == DigestDecision::WAIT) return false;
+
+    // Segna il giorno come fatto PRIMA di inviare: se la scrittura fallisce
+    // non si invia, altrimenti si rimanderebbe ogni 30 secondi.
+    DigestSettings s = g_digest->get();
+    s.last_sent_day = localDayNumber(localTime(now, s));
+    if (!g_digest->save(s)) return false;
+
+    if (d == DigestDecision::SEND &&
+        formatDigest(*g_posts, *g_room_registry, now, text, text_cap) > 0) {
+      send = true;
+    }
+  }
+  if (!send) return false;
+
+  const DigestSettings& s = g_digest->get();
+  memset(psk, 0, 32);
+  memcpy(psk, s.psk, s.psk_len);
+  psk_len = s.psk_len;
+  return true;
 }
 
 namespace {

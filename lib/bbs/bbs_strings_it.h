@@ -136,5 +136,40 @@ constexpr const char* kNoPinnedPrefix = "Nessun post fissato in ";
 
 // Concatenato dal parser con "<nickname>: <testo>" del post fissato.
 
+// Riepilogo giornaliero (DIGEST, solo amministratore).
+// Format string per snprintf: %u = numero totale di post nelle ultime 24h.
+constexpr const char* kDigestHeadFmt = "Ultime 24h: %u post. ";
+constexpr const char* kDigestNoPosts = "Ultime 24h: nessun nuovo post.";
+
+// Format string per snprintf dello stato: attivo/disattivato, ora, fuso
+// (segno, ore, minuti), ora legale, canale, data dell'ultimo invio.
+constexpr const char* kDigestStatusFmt =
+    "Riepilogo: %s, ore %02u:%02u, fuso %c%u:%02u %s, canale %s, ultimo invio %s.";
+constexpr const char* kDigestStatusOn = "attivo";
+constexpr const char* kDigestStatusOff = "disattivato";
+constexpr const char* kDigestDstEu = "con ora legale UE";
+constexpr const char* kDigestDstNone = "senza ora legale";
+constexpr const char* kDigestChannelPublic = "Public";
+constexpr const char* kDigestChannelPrivate = "privato";
+constexpr const char* kDigestNever = "mai";
+// Format string: anno, mese, giorno.
+constexpr const char* kDigestDateFmt = "%04d-%02u-%02u";
+
+constexpr const char* kDigestUsage =
+    "Usa: DIGEST [ON|OFF|TIME HH:MM|TZ +H[:MM]|DST ON|OFF|CHANNEL PUBLIC|<psk base64>|NOW].";
+constexpr const char* kDigestBadTime = "Ora non valida. Usa: DIGEST TIME HH:MM (00:00-23:59).";
+constexpr const char* kDigestBadTz = "Fuso non valido. Usa: DIGEST TZ +H[:MM], da -12:00 a +14:00.";
+constexpr const char* kDigestBadPsk = "Chiave non valida: serve una PSK base64 di 16 o 32 byte.";
+constexpr const char* kDigestSaveFailed = "Impossibile salvare il riepilogo (errore di scrittura).";
+constexpr const char* kDigestOnOk = "Riepilogo giornaliero attivato.";
+constexpr const char* kDigestOffOk = "Riepilogo giornaliero disattivato.";
+constexpr const char* kDigestTimeOkFmt = "Riepilogo programmato alle %02u:%02u.";
+constexpr const char* kDigestTzOkFmt = "Fuso impostato: %c%u:%02u.";
+constexpr const char* kDigestDstOnOk = "Ora legale UE attivata.";
+constexpr const char* kDigestDstOffOk = "Ora legale UE disattivata.";
+constexpr const char* kDigestChannelPublicOk = "Canale impostato: Public.";
+constexpr const char* kDigestChannelPrivateOk = "Canale privato impostato.";
+constexpr const char* kDigestNowOk = "Riepilogo in invio a breve.";
+
 } // namespace strings
 } // namespace bbs

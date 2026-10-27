@@ -27,6 +27,15 @@ void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channe
 // (0 se non c'e' risposta o se init() non e' ancora stato chiamato).
 size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* out, size_t out_cap);
 
+// Chiamata periodicamente da MyMesh::loop() (ogni ~30 secondi). Ritorna true
+// se va inviato ora il riepilogo giornaliero (o uno richiesto con DIGEST
+// NOW): il testo, SENZA prefisso mittente (al massimo text_cap-1 byte), e'
+// in 'text'; la PSK del canale di gruppo e' in 'psk' (buffer da 32 byte,
+// azzerato oltre 'psk_len', che vale 16 o 32). Ritorna false se non c'e'
+// nulla da inviare, se il giorno viene solo segnato come fatto (nessun post,
+// o finestra di recupero scaduta) o se init() non e' ancora stato chiamato.
+bool pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len);
+
 // Dump testuale (stanze, utenti, post) su Serial, per un backup leggibile
 // prima di un repair/riflash, pensato per essere riletto da importFeedLine()
 // (formato "BBS EXPORT v1", vedi bbs_port_adapter.cpp). Da chiamare SOLO da

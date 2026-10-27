@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "bbs_digest.h"
 #include "bbs_mail_store.h"
 #include "bbs_mod_log.h"
 #include "bbs_motd.h"
@@ -25,6 +26,7 @@ struct CommandContext {
   RoomRegistry& room_registry;
   ModLog& modlog;
   MotdStore& motd;
+  DigestStore& digest;
   const uint8_t* pub_key;  // BBS_PUBKEY_LEN byte, del mittente
   uint32_t now_ts;
 };

@@ -422,6 +422,152 @@ size_t handleMotdCmd(CommandContext& ctx, const char* args, UserId actor, char* 
   return copyOut(strings::kMotdSetOk, out, out_cap);
 }
 
+// --- Riepilogo giornaliero (DIGEST, solo amministratore) ---
+
+bool equalsIgnoreCase(const char* a, const char* b) {
+  for (; *a != 0 && *b != 0; a++, b++) {
+    char ca = (*a >= 'a' && *a <= 'z') ? (char)(*a - 'a' + 'A') : *a;
+    char cb = (*b >= 'a' && *b <= 'z') ? (char)(*b - 'a' + 'A') : *b;
+    if (ca != cb) return false;
+  }
+  return *a == 0 && *b == 0;
+}
+
+// "HH:MM" (1-2 cifre per l'ora, 2 per i minuti).
+bool parseHourMinute(const char* s, uint8_t& hour, uint8_t& minute) {
+  const char* p = s;
+  unsigned h = 0;
+  size_t nd = 0;
+  while (*p >= '0' && *p <= '9' && nd < 3) {
+    h = h * 10 + (unsigned)(*p - '0');
+    p++;
+    nd++;
+  }
+  if (nd == 0 || nd > 2 || *p != ':') return false;
+  p++;
+  if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' || p[2] != 0) return false;
+  unsigned m = (unsigned)(p[0] - '0') * 10 + (unsigned)(p[1] - '0');
+  if (h > 23 || m > 59) return false;
+  hour = (uint8_t)h;
+  minute = (uint8_t)m;
+  return true;
+}
+
+// "+H", "-H:MM", "H" (segno opzionale), da -12:00 a +14:00. Ritorna minuti.
+bool parseTzOffset(const char* s, int16_t& offset_min) {
+  const char* p = s;
+  int sign = 1;
+  if (*p == '+' || *p == '-') {
+    if (*p == '-') sign = -1;
+    p++;
+  }
+  unsigned h = 0;
+  size_t nd = 0;
+  while (*p >= '0' && *p <= '9' && nd < 3) {
+    h = h * 10 + (unsigned)(*p - '0');
+    p++;
+    nd++;
+  }
+  if (nd == 0 || nd > 2) return false;
+  unsigned m = 0;
+  if (*p == ':') {
+    p++;
+    if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9') return false;
+    m = (unsigned)(p[0] - '0') * 10 + (unsigned)(p[1] - '0');
+    p += 2;
+  }
+  if (*p != 0 || m > 59) return false;
+  int total = sign * (int)(h * 60 + m);
+  if (total < -720 || total > 840) return false;
+  offset_min = (int16_t)total;
+  return true;
+}
+
+size_t handleDigestCmd(CommandContext& ctx, const char* args, UserId actor, char* out, size_t out_cap) {
+  if (!hasAtLeastRole(ctx, actor, ROLE_ADMIN)) return copyOut(strings::kPermissionDenied, out, out_cap);
+
+  char sub[8];
+  const char* rest = extractCommand(args, sub, sizeof(sub));
+  DigestSettings s = ctx.digest.get();  // persisti-poi-applica: si modifica la copia
+  char buf[BBS_MAX_TEXT_LEN + 1];
+
+  if (sub[0] == 0) {
+    int tz = s.tz_offset_min;
+    unsigned tz_abs = (unsigned)(tz < 0 ? -tz : tz);
+    char date[16];
+    if (s.last_sent_day == 0) {
+      copyOut(strings::kDigestNever, date, sizeof(date));
+    } else {
+      int y;
+      unsigned mo, d;
+      civilFromDays((int64_t)s.last_sent_day, y, mo, d);
+      snprintf(date, sizeof(date), strings::kDigestDateFmt, y, mo, d);
+    }
+    snprintf(buf, sizeof(buf), strings::kDigestStatusFmt, s.enabled ? strings::kDigestStatusOn : strings::kDigestStatusOff,
+             (unsigned)s.hour, (unsigned)s.minute, tz < 0 ? '-' : '+', tz_abs / 60, tz_abs % 60,
+             s.eu_dst ? strings::kDigestDstEu : strings::kDigestDstNone,
+             s.usesPublicPsk() ? strings::kDigestChannelPublic : strings::kDigestChannelPrivate, date);
+    return copyOut(buf, out, out_cap);
+  }
+
+  if (strcmp(sub, "NOW") == 0) {
+    ctx.digest.requestNow();
+    return copyOut(strings::kDigestNowOk, out, out_cap);
+  }
+
+  const char* ok_text = nullptr;
+  if (strcmp(sub, "ON") == 0 || strcmp(sub, "OFF") == 0) {
+    s.enabled = (sub[1] == 'N');
+    ok_text = s.enabled ? strings::kDigestOnOk : strings::kDigestOffOk;
+  } else if (strcmp(sub, "TIME") == 0) {
+    char tok[8];
+    extractToken(rest, tok, sizeof(tok));
+    if (!parseHourMinute(tok, s.hour, s.minute)) return copyOut(strings::kDigestBadTime, out, out_cap);
+    snprintf(buf, sizeof(buf), strings::kDigestTimeOkFmt, (unsigned)s.hour, (unsigned)s.minute);
+    ok_text = buf;
+  } else if (strcmp(sub, "TZ") == 0) {
+    char tok[12];
+    extractToken(rest, tok, sizeof(tok));
+    if (!parseTzOffset(tok, s.tz_offset_min)) return copyOut(strings::kDigestBadTz, out, out_cap);
+    int tz = s.tz_offset_min;
+    unsigned tz_abs = (unsigned)(tz < 0 ? -tz : tz);
+    snprintf(buf, sizeof(buf), strings::kDigestTzOkFmt, tz < 0 ? '-' : '+', tz_abs / 60, tz_abs % 60);
+    ok_text = buf;
+  } else if (strcmp(sub, "DST") == 0) {
+    char tok[8];
+    extractCommand(rest, tok, sizeof(tok));
+    if (strcmp(tok, "ON") == 0) {
+      s.eu_dst = true;
+    } else if (strcmp(tok, "OFF") == 0) {
+      s.eu_dst = false;
+    } else {
+      return copyOut(strings::kDigestUsage, out, out_cap);
+    }
+    ok_text = s.eu_dst ? strings::kDigestDstOnOk : strings::kDigestDstOffOk;
+  } else if (strcmp(sub, "CHANNEL") == 0) {
+    char tok[64];
+    extractToken(rest, tok, sizeof(tok));
+    if (tok[0] == 0) return copyOut(strings::kDigestUsage, out, out_cap);
+    if (equalsIgnoreCase(tok, "PUBLIC")) {
+      s.setPublicPsk();
+      ok_text = strings::kDigestChannelPublicOk;
+    } else {
+      uint8_t psk[kDigestPskMaxLen];
+      size_t n = base64Decode(tok, psk, sizeof(psk));
+      if (n != 16 && n != 32) return copyOut(strings::kDigestBadPsk, out, out_cap);
+      memset(s.psk, 0, sizeof(s.psk));
+      memcpy(s.psk, psk, n);
+      s.psk_len = (uint8_t)n;
+      ok_text = strings::kDigestChannelPrivateOk;
+    }
+  } else {
+    return copyOut(strings::kDigestUsage, out, out_cap);
+  }
+
+  if (!ctx.digest.save(s)) return copyOut(strings::kDigestSaveFailed, out, out_cap);
+  return copyOut(ok_text, out, out_cap);
+}
+
 } // namespace
 
 size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t out_cap) {
@@ -630,6 +776,10 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
 
   if (strcmp(cmd, "MOTD") == 0) {
     return handleMotdCmd(ctx, args, uid, out, out_cap);
+  }
+
+  if (strcmp(cmd, "DIGEST") == 0) {
+    return handleDigestCmd(ctx, args, uid, out, out_cap);
   }
 
   // Nessun comando riconosciuto: testo libero, trattato come post nella
