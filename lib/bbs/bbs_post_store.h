@@ -24,6 +24,10 @@ public:
   // ce ne sono.
   bool findNextUnread(uint8_t room_id, uint32_t after_ts, PostRecord& out) const;
 
+  // L'ultimo post non cancellato della stanza (un solo passaggio sul log).
+  // Ritorna false se non ce ne sono.
+  bool findLatest(uint8_t room_id, PostRecord& out) const;
+
   // Conta i post nella stanza con timestamp > after_ts (scan completo,
   // pensato per essere chiamato solo al LOGIN, non nel percorso caldo).
   uint32_t countUnread(uint8_t room_id, uint32_t after_ts) const;

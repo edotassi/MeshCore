@@ -371,7 +371,7 @@ size_t handleStats(CommandContext& ctx, char* out, size_t out_cap) {
     total_posts += ctx.posts.countUnread(ctx.room_registry.at(i).id, 0);
   }
   uint32_t total_mail = ctx.mail.totalCount();
-  uint32_t total_users = ctx.users.count();
+  uint32_t total_users = ctx.users.countNonSystem();
   uint32_t active_now = 0;
   size_t n = ctx.sessions.count();
   for (size_t i = 0; i < n; i++) {
@@ -646,6 +646,121 @@ size_t handleBotCmd(CommandContext& ctx, const char* args, UserId actor, char* o
   return copyOut(ok_text, out, out_cap);
 }
 
+// --- News da MQTT (NEWS, solo amministratore) ---
+
+// Host: 1-63 caratteri [A-Za-z0-9._-].
+bool isValidNewsHost(const char* host) {
+  size_t len = strlen(host);
+  if (len == 0 || len >= kNewsServerLen) return false;
+  for (size_t i = 0; i < len; i++) {
+    char c = host[i];
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+              c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// Porta 1-65535, solo cifre.
+bool parseNewsPort(const char* s, uint16_t& port) {
+  if (s[0] == 0 || strlen(s) > 5) return false;
+  uint32_t v = 0;
+  for (const char* p = s; *p != 0; p++) {
+    if (*p < '0' || *p > '9') return false;
+    v = v * 10 + (uint32_t)(*p - '0');
+  }
+  if (v == 0 || v > 65535) return false;
+  port = (uint16_t)v;
+  return true;
+}
+
+size_t handleNewsCmd(CommandContext& ctx, const char* args, UserId actor, char* out, size_t out_cap) {
+  if (!hasAtLeastRole(ctx, actor, ROLE_ADMIN)) return copyOut(strings::kPermissionDenied, out, out_cap);
+
+  char sub[8];
+  const char* rest = extractCommand(args, sub, sizeof(sub));
+  NewsSettings s = ctx.news.get();  // persisti-poi-applica: si modifica la copia
+  char buf[BBS_MAX_TEXT_LEN + 1];
+
+  if (sub[0] == 0) {
+    // Mai la password ne' la chiave: solo se la chiave c'e'.
+    const RoomInfo* room = (s.room_id == kNoRoom) ? nullptr : ctx.room_registry.findRoom(s.room_id);
+    const NewsStatus& st = ctx.news.status();
+    snprintf(buf, sizeof(buf), strings::kNewsStatusFmt, s.enabled ? strings::kNewsStatusOn : strings::kNewsStatusOff,
+             s.server[0] ? s.server : strings::kNewsNotSet, (unsigned)s.port, s.topic,
+             room ? room->name : strings::kNewsNotSet, s.key_len ? strings::kNewsYes : strings::kNewsNo,
+             st.connected ? strings::kNewsConnected : strings::kNewsNotConnected, (unsigned)st.received_ok);
+    return copyOut(buf, out, out_cap);
+  }
+
+  const char* ok_text = nullptr;
+  if (strcmp(sub, "ON") == 0 || strcmp(sub, "OFF") == 0) {
+    s.enabled = (sub[1] == 'N');
+    ok_text = s.enabled ? strings::kNewsOnOk : strings::kNewsOffOk;
+  } else if (strcmp(sub, "SERVER") == 0) {
+    char host[kNewsServerLen + 8];
+    rest = extractToken(rest, host, sizeof(host));
+    char port_tok[8];
+    extractToken(rest, port_tok, sizeof(port_tok));
+    uint16_t port = kNewsDefaultPort;
+    if (!isValidNewsHost(host) || (port_tok[0] != 0 && !parseNewsPort(port_tok, port))) {
+      return copyOut(strings::kNewsBadServer, out, out_cap);
+    }
+    strcpy(s.server, host);
+    s.port = port;
+    snprintf(buf, sizeof(buf), strings::kNewsServerOkFmt, s.server, (unsigned)s.port);
+    ok_text = buf;
+  } else if (strcmp(sub, "USER") == 0) {
+    char user[kNewsUserLen + 8];
+    rest = extractToken(rest, user, sizeof(user));
+    char pass[kNewsPassLen + 8];
+    extractToken(rest, pass, sizeof(pass));
+    if (strcmp(user, "-") == 0 && pass[0] == 0) {
+      memset(s.username, 0, sizeof(s.username));
+      memset(s.password, 0, sizeof(s.password));
+      ok_text = strings::kNewsUserCleared;
+    } else {
+      if (user[0] == 0 || pass[0] == 0 || strlen(user) >= kNewsUserLen || strlen(pass) >= kNewsPassLen) {
+        return copyOut(strings::kNewsBadUser, out, out_cap);
+      }
+      memset(s.username, 0, sizeof(s.username));
+      memset(s.password, 0, sizeof(s.password));
+      strcpy(s.username, user);
+      strcpy(s.password, pass);
+      ok_text = strings::kNewsUserOk;
+    }
+  } else if (strcmp(sub, "TOPIC") == 0) {
+    char topic[kNewsTopicLen + 8];
+    extractToken(rest, topic, sizeof(topic));
+    if (topic[0] == 0 || strlen(topic) >= kNewsTopicLen) return copyOut(strings::kNewsBadTopic, out, out_cap);
+    memset(s.topic, 0, sizeof(s.topic));
+    strcpy(s.topic, topic);
+    copyOut2(strings::kNewsTopicOkPrefix, s.topic, buf, sizeof(buf));
+    ok_text = buf;
+  } else if (strcmp(sub, "KEY") == 0) {
+    char tok[64];
+    extractToken(rest, tok, sizeof(tok));
+    uint8_t key[kNewsKeyMaxLen];
+    size_t n = base64Decode(tok, key, sizeof(key));
+    if (n < kNewsKeyMinLen || n > kNewsKeyMaxLen) return copyOut(strings::kNewsBadKey, out, out_cap);
+    memset(s.key, 0, sizeof(s.key));
+    memcpy(s.key, key, n);
+    s.key_len = (uint8_t)n;
+    ok_text = strings::kNewsKeyOk;
+  } else if (strcmp(sub, "ROOM") == 0) {
+    uint8_t room_id;
+    if (!parseRoomIdArg(ctx.room_registry, rest, room_id)) return copyOut(strings::kInvalidRoom, out, out_cap);
+    s.room_id = room_id;
+    copyOut2(strings::kNewsRoomOkPrefix, ctx.room_registry.findRoom(room_id)->name, buf, sizeof(buf));
+    ok_text = buf;
+  } else {
+    return copyOut(strings::kNewsUsage, out, out_cap);
+  }
+
+  if (!ctx.news.save(s)) return copyOut(strings::kNewsSaveFailed, out, out_cap);
+  return copyOut(ok_text, out, out_cap);
+}
+
 } // namespace
 
 size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t out_cap) {
@@ -862,6 +977,10 @@ size_t processCommand(CommandContext& ctx, const char* input, char* out, size_t 
 
   if (strcmp(cmd, "BOT") == 0) {
     return handleBotCmd(ctx, args, uid, out, out_cap);
+  }
+
+  if (strcmp(cmd, "NEWS") == 0) {
+    return handleNewsCmd(ctx, args, uid, out, out_cap);
   }
 
   // Nessun comando riconosciuto: testo libero, trattato come post nella

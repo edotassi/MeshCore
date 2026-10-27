@@ -8,6 +8,7 @@
 #include "bbs_mail_store.h"
 #include "bbs_mod_log.h"
 #include "bbs_motd.h"
+#include "bbs_news.h"
 #include "bbs_pending_welcome.h"
 #include "bbs_post_store.h"
 #include "bbs_room_registry.h"
@@ -29,6 +30,7 @@ struct CommandContext {
   MotdStore& motd;
   DigestStore& digest;
   BotStore& bot;
+  NewsStore& news;
   const uint8_t* pub_key;  // BBS_PUBKEY_LEN byte, del mittente
   uint32_t now_ts;
 };

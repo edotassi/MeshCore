@@ -122,6 +122,28 @@ bool PostStore::findNextUnread(uint8_t room_id, uint32_t after_ts, PostRecord& o
   return found;
 }
 
+bool PostStore::findLatest(uint8_t room_id, PostRecord& out) const {
+  if (room_id >= BBS_MAX_ROOMS) return false;
+
+  char path[16];
+  roomPath(room_id, path, sizeof(path));
+  IFile* f = _fs.open(path, 'r');
+  if (!f || !f->valid()) {
+    if (f) f->close();
+    return false;
+  }
+
+  bool found = false;
+  PostRecord rec;
+  while (readRecord(*f, rec)) {
+    if (rec.flags & kPostFlagDeleted) continue;
+    out = rec;
+    found = true;
+  }
+  f->close();
+  return found;
+}
+
 uint32_t PostStore::countUnread(uint8_t room_id, uint32_t after_ts) const {
   if (room_id >= BBS_MAX_ROOMS) return 0;
 

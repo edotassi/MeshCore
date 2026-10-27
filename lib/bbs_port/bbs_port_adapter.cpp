@@ -11,6 +11,7 @@
 #include "../bbs/bbs_mail_store.h"
 #include "../bbs/bbs_mod_log.h"
 #include "../bbs/bbs_motd.h"
+#include "../bbs/bbs_news.h"
 #include "../bbs/bbs_notifier.h"
 #include "../bbs/bbs_pending_welcome.h"
 #include "../bbs/bbs_post_store.h"
@@ -42,6 +43,9 @@ MotdStore* g_motd = nullptr;
 DigestStore* g_digest = nullptr;
 BotStore* g_bot = nullptr;
 BotCooldown* g_bot_cooldown = nullptr;
+NewsStore* g_news = nullptr;
+NewsSeen* g_news_seen = nullptr;
+UserId g_system_user = kInvalidUserId;  // autore dei post delle news, vedi setNodeIdentity
 
 // Canali del bot con la chiave gia' risolta, ricalcolata quando cambia
 // BotStore::generation().
@@ -49,6 +53,12 @@ mesh::GroupChannel g_bot_channels[kBotMaxChannels];
 size_t g_bot_channel_count = 0;
 uint32_t g_bot_resolved_gen = 0;
 bool g_bot_resolved = false;
+
+// Copia una stringa C troncandola, sempre terminata.
+void copyCString(char* dst, const char* src, size_t cap) {
+  strncpy(dst, src, cap - 1);
+  dst[cap - 1] = 0;
+}
 
 void resolveBotChannels() {
   if (g_bot == nullptr) return;
@@ -108,11 +118,18 @@ void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channe
   g_digest = new DigestStore(*g_fs);
   g_bot = new BotStore(*g_fs);
   g_bot_cooldown = new BotCooldown();
+  g_news = new NewsStore(*g_fs);
+  g_news_seen = new NewsSeen(*g_fs);
 
   for (size_t i = 0; i < g_room_registry->count(); i++) {
     g_posts->repairRoom(g_room_registry->at(i).id);
   }
   g_mail->repair();
+}
+
+void setNodeIdentity(const uint8_t pub_key[32]) {
+  if (g_users == nullptr) return;
+  g_system_user = g_users->ensureSystemUser(pub_key, "News", g_clock->now());
 }
 
 size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* out, size_t out_cap) {
@@ -129,7 +146,7 @@ size_t handleClientMessage(const uint8_t pub_key[32], const char* input, char* o
   g_notifier->tick(now_ts);
 
   CommandContext ctx{*g_users, *g_welcome, *g_posts,         *g_mail,   *g_sessions,
-                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, *g_bot, pub_key, now_ts};
+                     *g_rooms, *g_room_registry, *g_modlog, *g_motd, *g_digest, *g_bot, *g_news, pub_key, now_ts};
   return processCommand(ctx, input, out, out_cap);
 }
 
@@ -195,10 +212,55 @@ size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, 
   if (channel_idx < 0 || (size_t)channel_idx >= g_bot->get().count) return 0;
 
   char sender[40];
-  if (!parseTestTrigger(text, sender, sizeof(sender))) return 0;
-  // Il cooldown si consuma solo se la risposta parte davvero.
+  BotCommand cmd = parseBotCommand(text, sender, sizeof(sender));
+  if (cmd == BotCommand::NONE) return 0;
+  // Il cooldown (condiviso tra "test" e "!news") si consuma solo se la
+  // risposta parte davvero.
   if (!g_bot_cooldown->allow((size_t)channel_idx, (uint32_t)now_ms)) return 0;
+
+  if (cmd == BotCommand::NEWS) {
+    PostRecord latest;
+    const char* news_text = nullptr;
+    uint8_t room_id = g_news->get().room_id;
+    if (room_id != kNoRoom && g_room_registry->findRoom(room_id) != nullptr &&
+        g_posts->findLatest(room_id, latest)) {
+      news_text = latest.text;
+    }
+    return formatNewsReply(sender, news_text, out, out_cap);
+  }
   return formatHopReply(sender, hop_count, path, hash_size, out, out_cap);
+}
+
+bool newsGetConfig(NewsClientConfig& out, uint32_t& generation) {
+  if (g_news == nullptr) return false;
+  const NewsSettings& s = g_news->get();
+  // Con l'orologio non ancora impostato non ci si collega: i post avrebbero
+  // timestamp sbagliati, e restando disconnessi il broker tiene in coda le
+  // news (sessione persistente) finche' l'orologio non e' valido.
+  out.enabled = s.enabled && g_clock->now() >= kDigestMinValidEpoch;
+  copyCString(out.server, s.server, sizeof(out.server));
+  out.port = s.port;
+  copyCString(out.username, s.username, sizeof(out.username));
+  copyCString(out.password, s.password, sizeof(out.password));
+  copyCString(out.topic, s.topic, sizeof(out.topic));
+  generation = g_news->generation();
+  return true;
+}
+
+void newsSetConnected(bool connected) {
+  if (g_news != nullptr) g_news->setConnected(connected);
+}
+
+int newsIngest(const uint8_t* payload, size_t len, const char** name) {
+  if (g_news == nullptr) return -1;
+  uint32_t now = g_clock->now();
+  bool clock_valid = now >= kDigestMinValidEpoch;
+  // nowUnique(): due news nello stesso secondo non devono avere lo stesso
+  // timestamp, altrimenti il cursore "ultimo letto" ne salterebbe una.
+  NewsIngestResult r = ingestNews(*g_news, *g_news_seen, *g_posts, *g_room_registry, *g_users, g_system_user,
+                                  (const char*)payload, len, g_clock->nowUnique(), clock_valid);
+  if (name != nullptr) *name = newsResultName(r);
+  return (int)r;
 }
 
 namespace {
@@ -289,7 +351,10 @@ void exportToSerial() {
     uint8_t pub_key[BBS_PUBKEY_LEN];
     if (!g_users->getPubkey(i, pub_key)) continue;
     UserRole role = g_users->getRole(i);
-    const char* role_str = (role == ROLE_ADMIN) ? "admin" : (role == ROLE_MODERATOR) ? "mod" : "user";
+    const char* role_str = g_users->isSystemUser(i)   ? "system"
+                           : (role == ROLE_ADMIN)      ? "admin"
+                           : (role == ROLE_MODERATOR)  ? "mod"
+                                                       : "user";
     Serial.printf("%lu\t", (unsigned long)i);
     printHex(pub_key, BBS_PUBKEY_LEN);
     Serial.printf("\t%s\t%s\t%s\t%s\n", nick, role_str, g_users->isBanned(i) ? "BANNED" : "-",
@@ -328,7 +393,9 @@ void exportToSerial() {
 
 bool importStart() {
   if (g_users == nullptr) return false;
-  if (g_users->count() > 0) return false;  // solo su nodo vuoto, vedi bbs_port_adapter.h
+  // Solo su nodo vuoto, vedi bbs_port_adapter.h: l'utente di sistema delle
+  // news, creato all'avvio, non conta.
+  if (g_users->countNonSystem() > 0) return false;
 
   g_import_active = true;
   g_import_section = ImportSection::NONE;
@@ -424,6 +491,19 @@ void importFeedLine(const char* line_in) {
       if (strlen(pubkey_hex) != BBS_PUBKEY_LEN * 2 || !hexDecode(pubkey_hex, pub_key, BBS_PUBKEY_LEN)) {
         Serial.printf("Import: pubkey non valida per l'utente '%s'\n", nickname);
         g_import_had_error = true;
+        return;
+      }
+
+      // Utente di sistema (autore delle news): esiste gia' con la chiave del
+      // nodo corrente (setNodeIdentity), quindi non si registra come utente
+      // normale e non diventa mai admin. Se la chiave e' quella di un nodo
+      // precedente viene ripristinato come un altro utente di sistema, cosi'
+      // i suoi post restano attribuibili; altrimenti non c'e' nulla da fare.
+      if (strcmp(role_str, "system") == 0) {
+        if (g_users->ensureSystemUser(pub_key, nickname, g_clock->now()) == kInvalidUserId) {
+          Serial.printf("Import: impossibile ripristinare l'utente di sistema '%s'\n", nickname);
+          g_import_had_error = true;
+        }
         return;
       }
 

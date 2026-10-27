@@ -725,6 +725,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
       , wormhole(&_prefs, _mgr, &rtc)
 #endif
+#ifdef WITH_BBS_NEWS
+      , news_client(&_prefs)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -799,6 +802,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
   // tutta la durata del programma, stesso effetto pratico).
   static bbs::port::MyMeshReplyChannel bbs_reply_channel(this);
   bbs::port::init(*_fs, getRTCClock(), &bbs_reply_channel);
+  // L'identita' del nodo e' gia' caricata: serve all'utente di sistema che
+  // firma i post delle news.
+  bbs::port::setNodeIdentity(self_id.pub_key);
 
   // establish default-scope
   {
@@ -838,6 +844,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
   if (_prefs.wormhole_enabled) wormhole.begin();
+#endif
+#ifdef WITH_BBS_NEWS
+  news_client.begin(self_id.pub_key);
 #endif
 
   updateAdvertTimer();
@@ -1226,6 +1235,9 @@ void MyMesh::loop() {
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
   wormhole.loop();
+#endif
+#ifdef WITH_BBS_NEWS
+  news_client.loop();
 #endif
 
   // Riepilogo giornaliero BBS: controllo ogni 30 secondi (la logica di

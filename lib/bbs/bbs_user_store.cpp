@@ -69,6 +69,21 @@ UserId UserStore::count() const {
   return sz / BBS_USER_RECORD_SIZE;
 }
 
+UserId UserStore::countNonSystem() const {
+  IFile* f = _fs.open(_path, 'r');
+  if (!f || !f->valid()) {
+    if (f) f->close();
+    return 0;
+  }
+  UserId n = 0;
+  UserRecord rec;
+  while (readFieldsFromFile(*f, rec)) {
+    if ((rec.flags & kUserFlagSystem) == 0) n++;
+  }
+  f->close();
+  return n;
+}
+
 UserId UserStore::findByPubkey(const uint8_t pub_key[BBS_PUBKEY_LEN]) const {
   IFile* f = _fs.open(_path, 'r');
   if (!f || !f->valid()) {
@@ -132,6 +147,11 @@ bool UserStore::isValidNickname(const char* nickname) {
 
 RegisterResult UserStore::registerUser(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname,
                                         uint32_t now_ts, UserId& out_id) {
+  return registerWithFlags(pub_key, nickname, now_ts, 0, out_id);
+}
+
+RegisterResult UserStore::registerWithFlags(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname,
+                                             uint32_t now_ts, uint8_t flags, UserId& out_id) {
   if (!isValidNickname(nickname)) return RegisterResult::INVALID_NICKNAME;
   if (findByPubkey(pub_key) != kInvalidUserId) return RegisterResult::ALREADY_EXISTS;
 
@@ -144,8 +164,11 @@ RegisterResult UserStore::registerUser(const uint8_t pub_key[BBS_PUBKEY_LEN], co
   size_t i = 0;
   for (; nickname[i] != 0 && i < BBS_NICK_LEN - 1; i++) rec.nickname[i] = nickname[i];
   for (; i < BBS_NICK_LEN; i++) rec.nickname[i] = 0;
-  rec.role = (n == 0) ? ROLE_ADMIN : ROLE_USER;  // il primo utente registrato e' admin (bootstrap)
-  rec.flags = 0;
+  // Il primo utente non di sistema e' admin (bootstrap); un utente di
+  // sistema non lo e' mai e non "consuma" il bootstrap.
+  bool is_system = (flags & kUserFlagSystem) != 0;
+  rec.role = (!is_system && countNonSystem() == 0) ? ROLE_ADMIN : ROLE_USER;
+  rec.flags = flags;
   rec.created_ts = now_ts;
   rec.last_login_ts = now_ts;
   rec.current_room = kDefaultRoomId;
@@ -161,6 +184,26 @@ RegisterResult UserStore::registerUser(const uint8_t pub_key[BBS_PUBKEY_LEN], co
 
   out_id = n;
   return RegisterResult::OK;
+}
+
+UserId UserStore::ensureSystemUser(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname,
+                                    uint32_t now_ts) {
+  UserId existing = findByPubkey(pub_key);
+  if (existing != kInvalidUserId) return existing;
+
+  UserId id;
+  const char* candidates[2] = {nickname, "NewsBBS"};
+  for (const char* nick : candidates) {
+    if (findByNickname(nick) != kInvalidUserId) continue;
+    if (registerWithFlags(pub_key, nick, now_ts, kUserFlagSystem, id) == RegisterResult::OK) return id;
+  }
+  return kInvalidUserId;
+}
+
+bool UserStore::isSystemUser(UserId id) const {
+  UserRecord rec;
+  if (!readRecordAt(id, rec)) return false;
+  return (rec.flags & kUserFlagSystem) != 0;
 }
 
 bool UserStore::rewriteApplying(UserId id, void (*mutate)(UserRecord&, uint32_t, uint32_t), uint32_t arg1,

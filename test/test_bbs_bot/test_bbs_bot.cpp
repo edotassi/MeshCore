@@ -293,6 +293,71 @@ TEST(BbsBotCooldown, MillisWraparound) {
   EXPECT_TRUE(c.allow(0, 30000u));               // ~35 s dopo
 }
 
+// --- parseBotCommand / !news ---
+
+TEST(BbsBotCommand, RecognizesTestAndNews) {
+  char s[40];
+  EXPECT_EQ(parseBotCommand("mario: test", s, sizeof(s)), BotCommand::TEST);
+  EXPECT_STREQ(s, "mario");
+  EXPECT_EQ(parseBotCommand("mario: !TEST", s, sizeof(s)), BotCommand::TEST);
+  EXPECT_EQ(parseBotCommand("mario: !news", s, sizeof(s)), BotCommand::NEWS);
+  EXPECT_STREQ(s, "mario");
+  EXPECT_EQ(parseBotCommand("Anna Rossi:  !NeWs  ", s, sizeof(s)), BotCommand::NEWS);
+  EXPECT_STREQ(s, "Anna Rossi");
+}
+
+TEST(BbsBotCommand, RejectsNearMisses) {
+  char s[40];
+  EXPECT_EQ(parseBotCommand("mario: news", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("mario: !news oggi", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("mario: !newsx", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("mario: !!news", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("!news", s, sizeof(s)), BotCommand::NONE);   // senza mittente
+  EXPECT_EQ(parseBotCommand(": !news", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("mario: !news", s, 0), BotCommand::NONE);
+  // parseTestTrigger resta solo per "test".
+  EXPECT_FALSE(parseTestTrigger("mario: !news", s, sizeof(s)));
+  EXPECT_TRUE(parseTestTrigger("mario: test", s, sizeof(s)));
+}
+
+TEST(BbsBotNewsReply, WithNewsAndWithout) {
+  char out[160];
+  size_t n = formatNewsReply("mario", "[ANSA] Titolo di prova", out, sizeof(out));
+  EXPECT_EQ(std::string(out, n), "@[mario] [ANSA] Titolo di prova");
+  n = formatNewsReply("mario", nullptr, out, sizeof(out));
+  EXPECT_EQ(std::string(out, n), "@[mario] nessuna news disponibile");
+  n = formatNewsReply("mario", "", out, sizeof(out));
+  EXPECT_EQ(std::string(out, n), "@[mario] nessuna news disponibile");
+}
+
+TEST(BbsBotNewsReply, TruncatesOnUtf8BoundaryWithinBudget) {
+  // Il testo ha 'e' accentate da 2 byte: ogni taglio deve cadere su un confine.
+  std::string text = "[ANSA] ";
+  for (int i = 0; i < 40; i++) text += "\xC3\xA8";
+  for (size_t cap = 2; cap < 140; cap++) {
+    char out[160];
+    size_t n = formatNewsReply("mario", text.c_str(), out, cap);
+    ASSERT_EQ(n, strlen(out));
+    ASSERT_LE(n, cap - 1);
+    // Nessun byte di continuazione orfano in coda.
+    size_t k = n;
+    while (k > 0 && ((uint8_t)out[k - 1] & 0xC0) == 0x80) k--;
+    if (k > 0 && (uint8_t)out[k - 1] >= 0xC0) {
+      size_t expect = ((uint8_t)out[k - 1] >= 0xF0) ? 4 : ((uint8_t)out[k - 1] >= 0xE0) ? 3 : 2;
+      ASSERT_EQ(n - (k - 1), expect) << "cap=" << cap;
+    }
+  }
+}
+
+TEST(BbsBotNewsReply, LongSenderIsShortenedOnlyIfNeeded) {
+  char out[64];
+  std::string sender(39, 's');
+  size_t n = formatNewsReply(sender.c_str(), "[ANSA] titolo lungo abbastanza", out, 32);
+  EXPECT_LE(n, 31u);
+  EXPECT_EQ(std::string(out, 2), "@[");
+  EXPECT_NE(std::string(out, n).find("] [ANSA"), std::string::npos);  // il testo non sparisce
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

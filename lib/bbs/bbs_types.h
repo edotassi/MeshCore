@@ -22,6 +22,10 @@ enum UserRole : uint8_t {
 // Bit di UserRecord::flags (Fase 3, moderazione).
 constexpr uint8_t kUserFlagBanned = 0x01;
 constexpr uint8_t kUserFlagMuted = 0x02;
+// Utente di sistema (autore delle news da MQTT, vedi bbs_news.h): usa la
+// chiave del nodo stesso, quindi nessun client puo' farne il LOGIN. Non conta
+// come utente per il bootstrap del primo admin, ne' per STATS.
+constexpr uint8_t kUserFlagSystem = 0x04;
 
 // Rappresentazione in memoria di un post letto/scritto dal log di una
 // stanza (vedi bbs_post_store.h/.cpp per il formato esatto su file).

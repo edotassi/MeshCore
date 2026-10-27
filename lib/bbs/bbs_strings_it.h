@@ -195,5 +195,39 @@ constexpr const char* kBotSaveFailed = "Impossibile salvare il bot (errore di sc
 constexpr const char* kBotReplyDirect = " ricevuto diretto (0 hop)";
 constexpr const char* kBotReplyHopsFmt = "] ricevuto con %u hop via ";
 
+// Risposta di "!news" quando non c'e' nessuna news (dopo "@[<mittente>] ").
+constexpr const char* kBotNewsNone = "nessuna news disponibile";
+
+// News da MQTT (NEWS, solo amministratore).
+// Format string per snprintf dello stato: attive/disattivate, server, porta,
+// topic, stanza, chiave impostata, connessione, news ricevute.
+constexpr const char* kNewsStatusFmt = "News: %s, %s:%u, topic %s, stanza %s, chiave %s, %s, ricevute %u.";
+constexpr const char* kNewsStatusOn = "attive";
+constexpr const char* kNewsStatusOff = "disattivate";
+constexpr const char* kNewsNotSet = "-";
+constexpr const char* kNewsYes = "si";
+constexpr const char* kNewsNo = "no";
+constexpr const char* kNewsConnected = "connesso";
+constexpr const char* kNewsNotConnected = "non connesso";
+
+constexpr const char* kNewsUsage =
+    "Usa: NEWS [ON|OFF|SERVER <host> [porta]|USER <utente> <password>|USER -|TOPIC <topic>|KEY <base64>|ROOM <n>].";
+constexpr const char* kNewsOnOk = "News attivate.";
+constexpr const char* kNewsOffOk = "News disattivate.";
+constexpr const char* kNewsBadServer = "Server non valido: usa un nome host (max 63 caratteri) e una porta 1-65535.";
+constexpr const char* kNewsBadUser = "Utente o password non validi: max 31 caratteri ciascuno, senza spazi.";
+constexpr const char* kNewsBadTopic = "Topic non valido: 1-63 caratteri senza spazi.";
+constexpr const char* kNewsBadKey = "Chiave non valida: serve una chiave base64 di 16-32 byte.";
+constexpr const char* kNewsSaveFailed = "Impossibile salvare le news (errore di scrittura).";
+// Format string per snprintf: host, porta.
+constexpr const char* kNewsServerOkFmt = "Server news impostato: %s:%u.";
+constexpr const char* kNewsUserOk = "Credenziali news impostate.";
+constexpr const char* kNewsUserCleared = "Credenziali news rimosse.";
+// Concatenato dal parser con il topic.
+constexpr const char* kNewsTopicOkPrefix = "Topic news impostato: ";
+constexpr const char* kNewsKeyOk = "Chiave news impostata.";
+// Concatenato dal parser con il nome della stanza.
+constexpr const char* kNewsRoomOkPrefix = "Stanza news impostata: ";
+
 } // namespace strings
 } // namespace bbs

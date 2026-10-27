@@ -227,6 +227,85 @@ TEST(BbsUserStore, BanAndMuteFlagsAreIndependentAndPersist) {
   }
 }
 
+TEST(BbsUserStore, SystemUserDoesNotStealFirstAdmin) {
+  FakeFileSystem fs;
+  UserStore store(fs);
+  uint8_t node[BBS_PUBKEY_LEN], key1[BBS_PUBKEY_LEN], key2[BBS_PUBKEY_LEN];
+  makeKey(node, 60);
+  makeKey(key1, 61);
+  makeKey(key2, 62);
+  UserId sys = store.ensureSystemUser(node, "News", 100);
+  ASSERT_NE(sys, kInvalidUserId);
+  EXPECT_EQ(store.getRole(sys), ROLE_USER);
+  EXPECT_TRUE(store.isSystemUser(sys));
+  EXPECT_EQ(store.count(), 1u);
+  EXPECT_EQ(store.countNonSystem(), 0u);
+
+  UserId id1, id2;
+  ASSERT_EQ(store.registerUser(key1, "primo", 100, id1), RegisterResult::OK);
+  ASSERT_EQ(store.registerUser(key2, "secondo", 100, id2), RegisterResult::OK);
+  EXPECT_EQ(store.getRole(id1), ROLE_ADMIN);
+  EXPECT_EQ(store.getRole(id2), ROLE_USER);
+  EXPECT_FALSE(store.isSystemUser(id1));
+  EXPECT_EQ(store.count(), 3u);
+  EXPECT_EQ(store.countNonSystem(), 2u);
+}
+
+TEST(BbsUserStore, SystemUserCreatedAfterHumansKeepsRolesAndIsRoleUser) {
+  FakeFileSystem fs;
+  UserStore store(fs);
+  uint8_t node[BBS_PUBKEY_LEN], key1[BBS_PUBKEY_LEN];
+  makeKey(node, 63);
+  makeKey(key1, 64);
+  UserId id1;
+  ASSERT_EQ(store.registerUser(key1, "primo", 100, id1), RegisterResult::OK);
+  UserId sys = store.ensureSystemUser(node, "News", 100);
+  ASSERT_NE(sys, kInvalidUserId);
+  EXPECT_EQ(store.getRole(id1), ROLE_ADMIN);
+  EXPECT_EQ(store.getRole(sys), ROLE_USER);
+}
+
+TEST(BbsUserStore, EnsureSystemUserIsIdempotentAndPersistsFlag) {
+  FakeFileSystem fs;
+  uint8_t node[BBS_PUBKEY_LEN];
+  makeKey(node, 65);
+  UserId sys;
+  {
+    UserStore store(fs);
+    sys = store.ensureSystemUser(node, "News", 100);
+    ASSERT_NE(sys, kInvalidUserId);
+    EXPECT_EQ(store.ensureSystemUser(node, "Altro", 200), sys);
+    EXPECT_EQ(store.count(), 1u);
+  }
+  UserStore store2(fs);
+  EXPECT_EQ(store2.ensureSystemUser(node, "News", 300), sys);
+  EXPECT_TRUE(store2.isSystemUser(sys));
+  char nick[BBS_NICK_LEN];
+  ASSERT_TRUE(store2.getNickname(sys, nick, sizeof(nick)));
+  EXPECT_STREQ(nick, "News");
+}
+
+TEST(BbsUserStore, SystemUserFallsBackToAlternativeNicknameIfTaken) {
+  FakeFileSystem fs;
+  UserStore store(fs);
+  uint8_t human[BBS_PUBKEY_LEN], node[BBS_PUBKEY_LEN];
+  makeKey(human, 66);
+  makeKey(node, 67);
+  UserId h;
+  ASSERT_EQ(store.registerUser(human, "News", 100, h), RegisterResult::OK);
+  UserId sys = store.ensureSystemUser(node, "News", 100);
+  ASSERT_NE(sys, kInvalidUserId);
+  char nick[BBS_NICK_LEN];
+  ASSERT_TRUE(store.getNickname(sys, nick, sizeof(nick)));
+  EXPECT_STREQ(nick, "NewsBBS");
+
+  // Anche il secondo nome occupato: fallisce senza registrare nulla.
+  uint8_t node2[BBS_PUBKEY_LEN];
+  makeKey(node2, 68);
+  EXPECT_EQ(store.ensureSystemUser(node2, "News", 100), kInvalidUserId);
+  EXPECT_EQ(store.count(), 2u);
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

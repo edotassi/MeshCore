@@ -1,0 +1,30 @@
+# Feed da leggere. Campi:
+#   name         identificatore univoco (entra nell'id dei messaggi: non rinominare dopo il primo avvio)
+#   url          URL RSS/Atom
+#   label        etichetta mostrata nel BBS (1..16 byte)
+#   max_per_run  massimo di notizie nuove per esecuzione (default 2)
+#   include      (opz.) regex sul titolo: pubblica solo i titoli che combaciano (case-insensitive)
+#   exclude      (opz.) regex sul titolo: scarta i titoli che combaciano (case-insensitive)
+feeds:
+  - name: ANSA
+    url: https://www.ansa.it/sito/ansait_rss.xml
+    label: ANSA
+    max_per_run: 2
+
+  - name: LeccePrima
+    url: https://www.lecceprima.it/rss
+    label: LeccePrima
+    max_per_run: 2
+
+  # Il repository pubblica una release per ogni tipo di firmware (Room Server,
+  # Repeater, Companion...): se ne tiene una sola per versione.
+  - name: MeshCore releases
+    url: https://github.com/meshcore-dev/MeshCore/releases.atom
+    label: MeshCore
+    max_per_run: 1
+    include: "^Companion"
+
+  - name: DDay.it
+    url: https://www.dday.it/rss
+    label: DDay
+    max_per_run: 1

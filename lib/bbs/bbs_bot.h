@@ -77,11 +77,24 @@ private:
   void load();
 };
 
+enum class BotCommand { NONE, TEST, NEWS };
+
 // Se 'text' ("<mittente>: <corpo>") ha come corpo esattamente "test" o
-// "!test" (senza distinzione di maiuscole, spazi ai lati ignorati), copia il
-// mittente (testo prima del primo ": ", troncato su un confine di code point
-// UTF-8 se non entra) in 'sender_out' e ritorna true. Altrimenti false.
+// "!test" (TEST) oppure "!news" (NEWS), senza distinzione di maiuscole e con
+// gli spazi ai lati ignorati, copia il mittente (testo prima del primo ": ",
+// troncato su un confine di code point UTF-8 se non entra) in 'sender_out' e
+// ritorna il comando. Altrimenti NONE (e 'sender_out' non e' significativo).
+BotCommand parseBotCommand(const char* text, char* sender_out, size_t cap);
+
+// Come parseBotCommand, ma true solo per TEST.
 bool parseTestTrigger(const char* text, char* sender_out, size_t cap);
+
+// Scrive in 'out' (al piu' cap-1 byte + terminatore) la risposta a "!news",
+// senza prefisso del nodo: "@[mario] <testo>" con il testo dell'ultima news
+// (nullptr o vuoto = "@[mario] nessuna news disponibile"). Il testo e'
+// accorciato su un confine UTF-8; il nome solo se non lascia spazio.
+// Ritorna la lunghezza.
+size_t formatNewsReply(const char* sender, const char* news_text, char* out, size_t cap);
 
 // Scrive in 'out' (al piu' cap-1 byte + terminatore) la risposta, senza
 // prefisso del nodo: "@[mario] ricevuto con 3 hop via a1,7f,c2" oppure

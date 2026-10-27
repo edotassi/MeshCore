@@ -1,0 +1,54 @@
+# Per Coolify: nuova risorsa "Docker Compose", base directory tools/news-bot.
+services:
+  mosquitto:
+    build: ./mosquitto
+    restart: unless-stopped
+    environment:
+      MQTT_PUBLISHER_USER: ${MQTT_PUBLISHER_USER:?impostare MQTT_PUBLISHER_USER}
+      MQTT_PUBLISHER_PASSWORD: ${MQTT_PUBLISHER_PASSWORD:?impostare MQTT_PUBLISHER_PASSWORD}
+      MQTT_BBS_USER: ${MQTT_BBS_USER:?impostare MQTT_BBS_USER}
+      MQTT_BBS_PASSWORD: ${MQTT_BBS_PASSWORD:?impostare MQTT_BBS_PASSWORD}
+      NEWS_TOPIC: ${NEWS_TOPIC:-bbs/news}
+    ports:
+      - "${MQTT_PUBLIC_PORT:-1884}:1883"  # porta pubblica sull host (1883 puo' essere gia' occupata)
+    volumes:
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1883"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  news-bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_PUBLISHER_USER: ${MQTT_PUBLISHER_USER:?impostare MQTT_PUBLISHER_USER}
+      MQTT_PUBLISHER_PASSWORD: ${MQTT_PUBLISHER_PASSWORD:?impostare MQTT_PUBLISHER_PASSWORD}
+      NEWS_TOPIC: ${NEWS_TOPIC:-bbs/news}
+      NEWS_HMAC_KEY: ${NEWS_HMAC_KEY:?impostare NEWS_HMAC_KEY (base64, 32 byte)}
+      POLL_MINUTES: ${POLL_MINUTES:-15}
+      MAX_PER_RUN: ${MAX_PER_RUN:-5}
+      QUIET_HOURS: ${QUIET_HOURS:-}
+      TZ: ${TZ:-Europe/Rome}
+    volumes:
+      - news-data:/data
+      # Per usare un feeds.yaml diverso da quello nell'immagine, decommenta:
+      # - ./feeds.yaml:/app/feeds.yaml:ro
+    healthcheck:
+      # il ciclo scrive /data/heartbeat a ogni esecuzione
+      test: ["CMD", "python", "-c", "import os,sys,time;p='/data/heartbeat';m=int(os.environ.get('POLL_MINUTES','15'));sys.exit(0 if time.time()-os.path.getmtime(p)<(2*m+5)*60 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  mosquitto-data:
+  news-data:

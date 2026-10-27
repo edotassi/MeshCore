@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Esempio</title><link>http://example.org</link><description>x</description>
+<item><title>Quinta notizia</title><guid>g5</guid><pubDate>Tue, 27 Oct 2026 09:40:00 GMT</pubDate></item>
+<item><title>Quarta &amp;egrave; &lt;b&gt;grassetto&lt;/b&gt;
+ su due righe</title><guid>g4</guid><pubDate>Tue, 27 Oct 2026 09:30:00 GMT</pubDate></item>
+<item><title>Terza notizia</title><guid>g3</guid><pubDate>Tue, 27 Oct 2026 09:20:00 GMT</pubDate></item>
+<item><title>Seconda notizia</title><guid>g2</guid><pubDate>Tue, 27 Oct 2026 09:10:00 GMT</pubDate></item>
+<item><title>Prima notizia</title><guid>g1</guid><pubDate>Tue, 27 Oct 2026 09:00:00 GMT</pubDate></item>
+</channel></rss>

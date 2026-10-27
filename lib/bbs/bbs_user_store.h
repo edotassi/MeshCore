@@ -27,6 +27,13 @@ public:
   RegisterResult registerUser(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname,
                               uint32_t now_ts, UserId& out_id);
 
+  // Utente di sistema (kUserFlagSystem): ritorna l'id esistente se la chiave
+  // e' gia' registrata (qualunque sia il suo nickname), altrimenti lo
+  // registra come ROLE_USER con il flag. Se 'nickname' e' gia' preso da un
+  // altro utente prova "NewsBBS". kInvalidUserId se non riesce.
+  UserId ensureSystemUser(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname, uint32_t now_ts);
+  bool isSystemUser(UserId id) const;
+
   bool touchLogin(UserId id, uint32_t now_ts);
 
   // Puntatore "ultimo letto" per stanza (0 se l'utente non ha mai letto
@@ -51,10 +58,11 @@ public:
   // stanza precedente.
   bool clearRoomForAllUsers(uint8_t room_id);
 
-  // Ruoli (Fase 3). Il primo utente mai registrato in questo archivio
-  // diventa automaticamente ROLE_ADMIN (bootstrap: altrimenti nessuno
-  // potrebbe mai promuovere il primo admin); tutti i successivi sono
-  // ROLE_USER finche' un admin non li promuove.
+  // Ruoli (Fase 3). Il primo utente non di sistema mai registrato in questo
+  // archivio diventa automaticamente ROLE_ADMIN (bootstrap: altrimenti
+  // nessuno potrebbe mai promuovere il primo admin); tutti i successivi sono
+  // ROLE_USER finche' un admin non li promuove. Gli utenti di sistema sono
+  // sempre ROLE_USER e non contano per il bootstrap.
   UserRole getRole(UserId id) const;
   bool setRole(UserId id, UserRole role);
 
@@ -73,6 +81,8 @@ public:
   bool getPubkey(UserId id, uint8_t out_buf[BBS_PUBKEY_LEN]) const;
 
   UserId count() const;
+  // Come count(), senza gli utenti di sistema (per STATS e per "nodo vuoto").
+  UserId countNonSystem() const;
 
   static bool isValidNickname(const char* nickname);
 
@@ -80,6 +90,8 @@ private:
   IFileSystem& _fs;
   const char* _path;
 
+  RegisterResult registerWithFlags(const uint8_t pub_key[BBS_PUBKEY_LEN], const char* nickname, uint32_t now_ts,
+                                   uint8_t flags, UserId& out_id);
   bool readRecordAt(UserId id, UserRecord& out) const;
   bool readFieldsFromFile(IFile& f, UserRecord& rec) const;
   bool writeFieldsToFile(IFile& f, const UserRecord& rec) const;

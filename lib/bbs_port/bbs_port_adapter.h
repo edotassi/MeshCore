@@ -22,6 +22,14 @@ namespace port {
 // il push asincrono dei post — vedi bbs_port_reply_channel.h.
 void init(fs::FS& filesystem, mesh::RTCClock* clock, IReplyChannel* reply_channel);
 
+// Da chiamare in MyMesh::begin() dopo init() e dopo che l'identita' del nodo
+// e' stata caricata: registra (se manca) l'utente di sistema "News", con la
+// chiave pubblica del nodo, che firma i post delle news da MQTT. Va chiamata
+// prima che qualunque utente si registri (altrimenti il bootstrap del primo
+// admin e' comunque corretto: l'utente di sistema non conta). No-op se init()
+// non e' stato chiamato.
+void setNodeIdentity(const uint8_t pub_key[32]);
+
 // Elabora un comando BBS da un client MeshCore gia' autenticato (pubkey
 // nota tramite l'handshake ANON_REQ esistente). Scrive la risposta
 // null-terminata in 'out' (capacita' out_cap) e ne ritorna la lunghezza
@@ -59,6 +67,33 @@ int botChannelIndex(const mesh::GroupChannel& ch);
 // "messaggio mio" spetta al chiamante.
 size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, const uint8_t* path,
                           uint8_t hash_size, unsigned long now_ms, char* out, size_t out_cap);
+
+// --- News da MQTT (vedi bbs_news.h) ---
+
+// Configurazione per il client MQTT del firmware (BbsNewsClient).
+struct NewsClientConfig {
+  bool enabled;
+  char server[64];
+  uint16_t port;
+  char username[32];
+  char password[32];
+  char topic[64];
+};
+
+// Copia la configurazione corrente in 'out' e in 'generation' un contatore
+// che cambia a ogni modifica (comando NEWS): il client si riconnette quando
+// cambia. Ritorna false (out non toccato) se init() non e' ancora stato
+// chiamato.
+bool newsGetConfig(NewsClientConfig& out, uint32_t& generation);
+
+// Il client MQTT segnala se e' connesso e iscritto al topic (per il comando NEWS).
+void newsSetConnected(bool connected);
+
+// Elabora un payload MQTT ricevuto (vedi bbs_news.h per il formato) e lo
+// accoda alla stanza delle news. Ritorna il codice di esito
+// (bbs::NewsIngestResult come intero, 0 = accodata), -1 se init() non e' ancora stato
+// chiamato. 'name' (se non nullptr) riceve il nome testuale dell'esito.
+int newsIngest(const uint8_t* payload, size_t len, const char** name = nullptr);
 
 // Dump testuale (stanze, utenti, post) su Serial, per un backup leggibile
 // prima di un repair/riflash, pensato per essere riletto da importFeedLine()

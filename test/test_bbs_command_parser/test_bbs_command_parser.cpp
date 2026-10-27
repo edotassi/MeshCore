@@ -30,9 +30,10 @@ struct Fixture {
   MotdStore motd{fs};
   DigestStore digest{fs};
   BotStore bot{fs};
+  NewsStore news{fs};
 
   std::string run(const uint8_t* pub_key, const char* input, uint32_t now_ts = 1000) {
-    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, digest, bot, pub_key, now_ts};
+    CommandContext ctx{users, welcome, posts, mail, sessions, rooms, room_registry, modlog, motd, digest, bot, news, pub_key, now_ts};
     char out[256];
     size_t n = processCommand(ctx, input, out, sizeof(out));
     return std::string(out, n);
@@ -1140,4 +1141,116 @@ TEST(BbsCommandParser, BotChannelDel) {
   EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL Public"), "Canale rimosso: Public.");
   EXPECT_EQ(f.run(admin, "BOT"), "Bot: disattivato, canali: nessuno.");
   EXPECT_EQ(f.run(admin, "BOT CHANNEL DEL"), std::string(strings::kBotUsage));
+}
+
+// --- NEWS ---
+
+TEST(BbsCommandParser, NewsIsAdminOnly) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN], user[BBS_PUBKEY_LEN];
+  makeKey(admin, 140);
+  makeKey(user, 141);
+  f.run(admin, "REGISTER capon");
+  f.run(user, "REGISTER utenten");
+  for (const char* cmd : {"NEWS", "NEWS ON", "NEWS SERVER x.it", "NEWS USER a b", "NEWS KEY AAAAAAAAAAAAAAAAAAAAAA==",
+                          "NEWS ROOM 1", "NEWS boh"}) {
+    EXPECT_EQ(f.run(user, cmd), std::string(strings::kPermissionDenied)) << cmd;
+  }
+  EXPECT_FALSE(f.news.get().enabled);
+  EXPECT_EQ(f.news.get().key_len, 0);
+}
+
+TEST(BbsCommandParser, NewsStatusAndOnOff) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 142);
+  f.run(admin, "REGISTER capon");
+  EXPECT_EQ(f.run(admin, "NEWS"), "News: disattivate, -:1883, topic bbs/news, stanza -, chiave no, non connesso, ricevute 0.");
+  EXPECT_EQ(f.run(admin, "news on"), std::string(strings::kNewsOnOk));
+  EXPECT_TRUE(f.news.get().enabled);
+  EXPECT_EQ(f.run(admin, "NEWS OFF"), std::string(strings::kNewsOffOk));
+  EXPECT_FALSE(f.news.get().enabled);
+  EXPECT_EQ(f.run(admin, "NEWS FOO"), std::string(strings::kNewsUsage));
+}
+
+TEST(BbsCommandParser, NewsConfigurationAndStatusNeverShowsSecrets) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 143);
+  f.run(admin, "REGISTER capon");
+  uint32_t gen = f.news.generation();
+
+  EXPECT_EQ(f.run(admin, "NEWS SERVER broker.example.org 8883"), "Server news impostato: broker.example.org:8883.");
+  EXPECT_EQ(f.news.get().port, 8883);
+  EXPECT_EQ(f.run(admin, "NEWS SERVER broker.example.org"), "Server news impostato: broker.example.org:1883.");
+  EXPECT_EQ(f.news.get().port, 1883);
+  EXPECT_EQ(f.run(admin, "NEWS USER bbs segretissima"), std::string(strings::kNewsUserOk));
+  EXPECT_STREQ(f.news.get().username, "bbs");
+  EXPECT_STREQ(f.news.get().password, "segretissima");
+  EXPECT_EQ(f.run(admin, "NEWS TOPIC casa/news"), "Topic news impostato: casa/news");
+  EXPECT_EQ(f.run(admin, "NEWS KEY AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="), std::string(strings::kNewsKeyOk));
+  EXPECT_EQ(f.news.get().key_len, 32);
+  EXPECT_EQ(f.news.get().key[31], 0x1f);
+
+  f.run(admin, "ROOM ADD News");
+  EXPECT_EQ(f.run(admin, "NEWS ROOM 3"), "Stanza news impostata: News");
+  EXPECT_EQ(f.news.get().room_id, 3);
+  EXPECT_GT(f.news.generation(), gen);
+
+  f.news.setConnected(true);
+  std::string st = f.run(admin, "NEWS");
+  EXPECT_EQ(st, "News: disattivate, broker.example.org:1883, topic casa/news, stanza News, chiave si, connesso, ricevute 0.");
+  EXPECT_LE(st.size(), BBS_MAX_TEXT_LEN);
+  EXPECT_EQ(st.find("segretissima"), std::string::npos);
+}
+
+TEST(BbsCommandParser, NewsUserDashClearsCredentials) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 144);
+  f.run(admin, "REGISTER capon");
+  f.run(admin, "NEWS USER bbs pw");
+  EXPECT_EQ(f.run(admin, "NEWS USER -"), std::string(strings::kNewsUserCleared));
+  EXPECT_STREQ(f.news.get().username, "");
+  EXPECT_STREQ(f.news.get().password, "");
+}
+
+TEST(BbsCommandParser, NewsRejectsBadArguments) {
+  Fixture f;
+  uint8_t admin[BBS_PUBKEY_LEN];
+  makeKey(admin, 145);
+  f.run(admin, "REGISTER capon");
+  uint32_t gen = f.news.generation();
+  EXPECT_EQ(f.run(admin, "NEWS SERVER"), std::string(strings::kNewsBadServer));
+  EXPECT_EQ(f.run(admin, "NEWS SERVER bad/host"), std::string(strings::kNewsBadServer));
+  EXPECT_EQ(f.run(admin, "NEWS SERVER host 0"), std::string(strings::kNewsBadServer));
+  EXPECT_EQ(f.run(admin, "NEWS SERVER host 65536"), std::string(strings::kNewsBadServer));
+  EXPECT_EQ(f.run(admin, "NEWS SERVER host abc"), std::string(strings::kNewsBadServer));
+  EXPECT_EQ(f.run(admin, "NEWS USER soloutente"), std::string(strings::kNewsBadUser));
+  EXPECT_EQ(f.run(admin, "NEWS USER a 12345678901234567890123456789012"), std::string(strings::kNewsBadUser));
+  EXPECT_EQ(f.run(admin, "NEWS TOPIC"), std::string(strings::kNewsBadTopic));
+  EXPECT_EQ(f.run(admin, "NEWS KEY"), std::string(strings::kNewsBadKey));
+  EXPECT_EQ(f.run(admin, "NEWS KEY AAAA"), std::string(strings::kNewsBadKey));  // 3 byte
+  EXPECT_EQ(f.run(admin, "NEWS KEY !!!!"), std::string(strings::kNewsBadKey));
+  // 33 byte: troppo lunga.
+  EXPECT_EQ(f.run(admin, "NEWS KEY AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), std::string(strings::kNewsBadKey));
+  EXPECT_EQ(f.run(admin, "NEWS ROOM 7"), std::string(strings::kInvalidRoom));
+  EXPECT_EQ(f.run(admin, "NEWS ROOM x"), std::string(strings::kInvalidRoom));
+  EXPECT_EQ(f.news.generation(), gen);  // nulla salvato
+  // 16 byte: valida.
+  EXPECT_EQ(f.run(admin, "NEWS KEY AAAAAAAAAAAAAAAAAAAAAA=="), std::string(strings::kNewsKeyOk));
+  EXPECT_EQ(f.news.get().key_len, 16);
+}
+
+TEST(BbsCommandParser, StatsDoesNotCountSystemUser) {
+  Fixture f;
+  uint8_t node[BBS_PUBKEY_LEN], a[BBS_PUBKEY_LEN];
+  makeKey(node, 150);
+  makeKey(a, 151);
+  ASSERT_NE(f.users.ensureSystemUser(node, "News", 100), kInvalidUserId);
+  f.run(a, "REGISTER solo");
+  char expected[96];
+  snprintf(expected, sizeof(expected), strings::kStatsFmt, 1u, 1u, 0u, 0u);
+  EXPECT_EQ(f.run(a, "STATS"), std::string(expected));
+  EXPECT_EQ(f.users.getRole(f.users.findByPubkey(a)), ROLE_ADMIN);  // il sistema non ha rubato il bootstrap
 }

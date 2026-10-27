@@ -166,28 +166,64 @@ bool BotStore::save(const BotSettings& s) {
 
 // --- Riconoscimento e formattazione ---
 
-bool parseTestTrigger(const char* text, char* sender_out, size_t cap) {
-  if (cap == 0) return false;
+BotCommand parseBotCommand(const char* text, char* sender_out, size_t cap) {
+  if (cap == 0) return BotCommand::NONE;
   const char* sep = strstr(text, ": ");
-  if (sep == nullptr || sep == text) return false;
+  if (sep == nullptr || sep == text) return BotCommand::NONE;
 
   const char* body = sep + 2;
   while (isSpace(*body)) body++;
   size_t body_len = strlen(body);
   while (body_len > 0 && isSpace(body[body_len - 1])) body_len--;
 
-  const char* word = body;
-  size_t word_len = body_len;
-  if (word_len > 0 && word[0] == '!') {
-    word++;
-    word_len--;
+  BotCommand cmd = BotCommand::NONE;
+  if (equalsLower(body, body_len, "test") || equalsLower(body, body_len, "!test")) {
+    cmd = BotCommand::TEST;
+  } else if (equalsLower(body, body_len, "!news")) {
+    cmd = BotCommand::NEWS;
   }
-  if (!equalsLower(word, word_len, "test")) return false;
+  if (cmd == BotCommand::NONE) return BotCommand::NONE;
 
   size_t sender_len = utf8SafeLen(text, (size_t)(sep - text), cap - 1);
   memcpy(sender_out, text, sender_len);
   sender_out[sender_len] = 0;
-  return sender_len > 0;
+  return sender_len > 0 ? cmd : BotCommand::NONE;
+}
+
+bool parseTestTrigger(const char* text, char* sender_out, size_t cap) {
+  return parseBotCommand(text, sender_out, cap) == BotCommand::TEST;
+}
+
+size_t formatNewsReply(const char* sender, const char* news_text, char* out, size_t cap) {
+  if (cap == 0) return 0;
+  out[0] = 0;
+  if (cap == 1) return 0;
+  const size_t budget = cap - 1;
+
+  const bool has_news = news_text != nullptr && news_text[0] != 0;
+  const char* body = has_news ? news_text : strings::kBotNewsNone;
+  const size_t body_full = strlen(body);
+
+  // "@[" + nome + "] " + testo: il testo ha la precedenza sul nome, che si
+  // accorcia solo se serve (almeno qualche carattere di testo resta sempre).
+  const size_t fixed = 2 + 2;  // "@[" e "] "
+  size_t sender_len = strlen(sender);
+  size_t max_sender = budget > fixed + 8 ? budget - fixed - 8 : 0;
+  sender_len = utf8SafeLen(sender, sender_len, max_sender);
+
+  size_t len = 0;
+  auto put = [&](const char* s, size_t n) {
+    if (len + n > budget) n = budget - len;
+    memcpy(out + len, s, n);
+    len += n;
+  };
+  put("@[", 2);
+  put(sender, sender_len);
+  put("] ", 2);
+  size_t room = budget > len ? budget - len : 0;
+  put(body, utf8SafeLen(body, body_full, room));
+  out[len] = 0;
+  return len;
 }
 
 size_t formatHopReply(const char* sender, uint8_t hop_count, const uint8_t* path, uint8_t hash_size, char* out,

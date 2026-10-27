@@ -41,6 +41,10 @@
 #include "helpers/bridges/MQTTWormholeBridge.h"
 #endif
 
+#ifdef WITH_BBS_NEWS
+#include "BbsNewsClient.h"
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -140,6 +144,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
 #endif
 #if defined(WITH_MQTT_WORMHOLE_BRIDGE)
   MQTTWormholeBridge wormhole;
+#endif
+#ifdef WITH_BBS_NEWS
+  BbsNewsClient news_client;  // news da MQTT nella BBS (vedi BbsNewsClient.h)
 #endif
 
   void addPost(ClientInfo* client, const char* postData);

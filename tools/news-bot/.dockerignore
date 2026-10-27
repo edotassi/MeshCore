@@ -1,0 +1,6 @@
+tests
+mosquitto
+.venv
+__pycache__
+.env
+*.db

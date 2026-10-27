@@ -286,6 +286,32 @@ TEST(BbsPostStore, SearchSkipsDeletedPosts) {
   EXPECT_FALSE(store.searchRecent(0, "segreto", 200, rec));
 }
 
+
+TEST(BbsPostStore, FindLatestReturnsLastNonDeletedPost) {
+  FakeFileSystem fs;
+  PostStore store(fs);
+  PostRecord rec;
+  EXPECT_FALSE(store.findLatest(0, rec));  // nessun log
+  EXPECT_FALSE(store.findLatest(BBS_MAX_ROOMS, rec));
+
+  ASSERT_TRUE(store.appendPost(0, 1, 100, "uno"));
+  ASSERT_TRUE(store.appendPost(0, 2, 200, "due"));
+  ASSERT_TRUE(store.appendPost(1, 3, 300, "altra stanza"));
+  ASSERT_TRUE(store.findLatest(0, rec));
+  EXPECT_STREQ(rec.text, "due");
+  EXPECT_EQ(rec.timestamp, 200u);
+  EXPECT_EQ(rec.user_id, 2u);
+
+  ASSERT_TRUE(store.deleteLastPost(0));
+  ASSERT_TRUE(store.findLatest(0, rec));
+  EXPECT_STREQ(rec.text, "uno");
+
+  // Stanza il cui unico post e' cancellato: nessun "ultimo".
+  ASSERT_TRUE(store.appendPost(2, 1, 400, "solo"));
+  ASSERT_TRUE(store.deleteLastPost(2));
+  EXPECT_FALSE(store.findLatest(2, rec));
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
