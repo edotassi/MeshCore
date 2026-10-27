@@ -179,6 +179,8 @@ BotCommand parseBotCommand(const char* text, char* sender_out, size_t cap) {
   BotCommand cmd = BotCommand::NONE;
   if (equalsLower(body, body_len, "test") || equalsLower(body, body_len, "!test")) {
     cmd = BotCommand::TEST;
+  } else if (equalsLower(body, body_len, "ping") || equalsLower(body, body_len, "!ping")) {
+    cmd = BotCommand::PING;
   } else if (equalsLower(body, body_len, "!news")) {
     cmd = BotCommand::NEWS;
   }
@@ -227,7 +229,7 @@ size_t formatNewsReply(const char* sender, const char* news_text, char* out, siz
 }
 
 size_t formatHopReply(const char* sender, uint8_t hop_count, const uint8_t* path, uint8_t hash_size, char* out,
-                      size_t cap) {
+                      size_t cap, bool pong) {
   if (cap == 0) return 0;
   out[0] = 0;
   if (cap == 1) return 0;
@@ -238,9 +240,9 @@ size_t formatHopReply(const char* sender, uint8_t hop_count, const uint8_t* path
 
   char tail[40];
   if (hop_count == 0) {
-    snprintf(tail, sizeof(tail), "]%s", strings::kBotReplyDirect);
+    snprintf(tail, sizeof(tail), "]%s", pong ? strings::kBotPongDirect : strings::kBotReplyDirect);
   } else {
-    snprintf(tail, sizeof(tail), strings::kBotReplyHopsFmt, (unsigned)hop_count);
+    snprintf(tail, sizeof(tail), pong ? strings::kBotPongHopsFmt : strings::kBotReplyHopsFmt, (unsigned)hop_count);
   }
   const size_t tail_len = strlen(tail);
   const size_t fixed = 2 + tail_len;  // "@[" + tail

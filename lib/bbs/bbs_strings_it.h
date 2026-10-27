@@ -194,6 +194,9 @@ constexpr const char* kBotSaveFailed = "Impossibile salvare il bot (errore di sc
 // string per snprintf) con %u = numero di hop, seguito dall'elenco del percorso.
 constexpr const char* kBotReplyDirect = " ricevuto diretto (0 hop)";
 constexpr const char* kBotReplyHopsFmt = "] ricevuto con %u hop via ";
+// Stesse forme per la risposta a "ping".
+constexpr const char* kBotPongDirect = " pong, diretto (0 hop)";
+constexpr const char* kBotPongHopsFmt = "] pong, %u hop via ";
 
 // Risposta di "!news" quando non c'e' nessuna news (dopo "@[<mittente>] ").
 constexpr const char* kBotNewsNone = "nessuna news disponibile";

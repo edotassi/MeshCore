@@ -293,6 +293,25 @@ TEST(BbsBotCooldown, MillisWraparound) {
   EXPECT_TRUE(c.allow(0, 30000u));               // ~35 s dopo
 }
 
+// --- ping ---
+
+TEST(BbsBotPing, RecognizesPingAndFormatsPong) {
+  char s[40];
+  EXPECT_EQ(parseBotCommand("mario: ping", s, sizeof(s)), BotCommand::PING);
+  EXPECT_STREQ(s, "mario");
+  EXPECT_EQ(parseBotCommand("mario:  !PING ", s, sizeof(s)), BotCommand::PING);
+  EXPECT_EQ(parseBotCommand("mario: ping?", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_EQ(parseBotCommand("mario: pinga", s, sizeof(s)), BotCommand::NONE);
+  EXPECT_FALSE(parseTestTrigger("mario: ping", s, sizeof(s)));
+
+  char out[160];
+  const uint8_t path[] = {0xa1, 0x7f, 0xc2};
+  formatHopReply("mario", 3, path, 1, out, sizeof(out), true);
+  EXPECT_STREQ(out, "@[mario] pong, 3 hop via a1,7f,c2");
+  formatHopReply("mario", 0, nullptr, 1, out, sizeof(out), true);
+  EXPECT_STREQ(out, "@[mario] pong, diretto (0 hop)");
+}
+
 // --- parseBotCommand / !news ---
 
 TEST(BbsBotCommand, RecognizesTestAndNews) {

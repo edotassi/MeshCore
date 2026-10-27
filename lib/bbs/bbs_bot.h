@@ -77,10 +77,10 @@ private:
   void load();
 };
 
-enum class BotCommand { NONE, TEST, NEWS };
+enum class BotCommand { NONE, TEST, PING, NEWS };
 
 // Se 'text' ("<mittente>: <corpo>") ha come corpo esattamente "test" o
-// "!test" (TEST) oppure "!news" (NEWS), senza distinzione di maiuscole e con
+// "!test" (TEST), "ping" o "!ping" (PING) oppure "!news" (NEWS), senza distinzione di maiuscole e con
 // gli spazi ai lati ignorati, copia il mittente (testo prima del primo ": ",
 // troncato su un confine di code point UTF-8 se non entra) in 'sender_out' e
 // ritorna il comando. Altrimenti NONE (e 'sender_out' non e' significativo).
@@ -98,12 +98,13 @@ size_t formatNewsReply(const char* sender, const char* news_text, char* out, siz
 
 // Scrive in 'out' (al piu' cap-1 byte + terminatore) la risposta, senza
 // prefisso del nodo: "@[mario] ricevuto con 3 hop via a1,7f,c2" oppure
-// "@[mario] ricevuto diretto (0 hop)". Il percorso e' in esadecimale
+// "@[mario] ricevuto diretto (0 hop)"; con 'pong' (risposta a "ping")
+// "@[mario] pong, 3 hop via a1,7f,c2" / "@[mario] pong, diretto (0 hop)". Il percorso e' in esadecimale
 // minuscolo, 'hash_size' byte (1-4) per hop. Se non entra toglie hop dalla
 // coda e termina con ",..."; il nome del mittente e' accorciato su un
 // confine UTF-8 solo se serve. Ritorna la lunghezza.
 size_t formatHopReply(const char* sender, uint8_t hop_count, const uint8_t* path, uint8_t hash_size, char* out,
-                      size_t cap);
+                      size_t cap, bool pong = false);
 
 // Cooldown per canale (indice nella tabella dei canali del bot).
 class BotCooldown {

@@ -251,7 +251,7 @@ size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, 
   char sender[40];
   BotCommand cmd = parseBotCommand(text, sender, sizeof(sender));
   if (cmd == BotCommand::NONE) return 0;
-  // Il cooldown (condiviso tra "test" e "!news") si consuma solo se la
+  // Il cooldown (condiviso tra "test", "ping" e "!news") si consuma solo se la
   // risposta parte davvero.
   if (!g_bot_cooldown->allow((size_t)channel_idx, (uint32_t)now_ms)) return 0;
 
@@ -265,7 +265,7 @@ size_t botHandleGroupText(int channel_idx, const char* text, uint8_t hop_count, 
     }
     return formatNewsReply(sender, news_text, out, out_cap);
   }
-  return formatHopReply(sender, hop_count, path, hash_size, out, out_cap);
+  return formatHopReply(sender, hop_count, path, hash_size, out, out_cap, cmd == BotCommand::PING);
 }
 
 bool newsGetConfig(NewsClientConfig& out, uint32_t& generation) {
