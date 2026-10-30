@@ -29,6 +29,19 @@
 #include <RTClib.h>
 #include <target.h>
 
+#ifdef WITH_ROOM_EXTRAS
+  #ifndef ROOM_USE_LITTLEFS
+    #error "WITH_ROOM_EXTRAS requires ROOM_USE_LITTLEFS (data lives in /room/ on LittleFS)"
+  #endif
+  #include <bbs_port_littlefs.h>
+  #include <bbs_bot.h>
+  #include <bbs_digest.h>
+  #include <bbs_motd.h>
+  #include <room_post_file.h>
+  #include <room_digest.h>
+  #include <room_motd_seen.h>
+#endif
+
 #ifdef WITH_MQTT_BRIDGE
 #include "helpers/bridges/MQTTBridge.h"
 #define WITH_BRIDGE
@@ -131,6 +144,23 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t pending_sf;
   uint8_t pending_cr;
   int  matching_peer_indexes[MAX_CLIENTS];
+#if defined(WITH_ROOM_EXTRAS)
+  // Estensioni del room server (dati in /room/ sulla stessa LittleFS della BBS)
+  bbs::port::LittleFsFileSystem* x_ifs;
+  room::PostFile* x_post_file;
+  bbs::BotStore* x_bot;
+  bbs::BotCooldown x_bot_cooldown;
+  bbs::DigestStore* x_digest;
+  bbs::MotdStore* x_motd;
+  room::MotdSeen* x_motd_seen;
+  unsigned long x_motd_seen_save_at;   // 0 = niente da salvare
+  mesh::GroupChannel x_bot_channels[bbs::kBotMaxChannels];
+  size_t x_bot_channel_count;
+  uint32_t x_bot_resolved_gen;
+  bool x_bot_resolved;
+  unsigned long x_posts_save_at;   // 0 = niente da salvare
+  unsigned long x_next_digest_check;
+#endif
 #if defined(WITH_MQTT_BRIDGE)
   MQTTBridge bridge;
 #endif
@@ -193,11 +223,26 @@ protected:
 
   void sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, uint8_t path_hash_size);
 
+#if defined(WITH_ROOM_EXTRAS)
+  int searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) override;
+  void onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) override;
+#endif
+
 public:
   MyMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables);
 
   void begin(FILESYSTEM* fs);
   void addSystemPost(const char* postData);
+
+#if defined(WITH_ROOM_EXTRAS)
+  struct RoomStatus {
+    uint16_t active_clients;   // client ACL con attivita' nelle ultime 24 ore
+    uint16_t posts;            // post presenti nell'anello
+    uint32_t last_post_ts;     // 0 = nessun post
+    uint32_t now;              // ora corrente (RTC)
+  };
+  void getRoomStatus(RoomStatus& out);
+#endif
 
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
@@ -283,6 +328,23 @@ public:
   int getConnectedClientCount() override { return acl.getNumClients(); }
 
   static bool saveFilter(ClientInfo* client);
+
+#if defined(WITH_ROOM_EXTRAS)
+private:
+  void extrasBegin();
+  void loadPosts();
+  void savePosts();
+  void resolveBotChannels();
+  void sendGroupText(const mesh::GroupChannel& ch, const char* text, bool reply_scope, uint32_t delay_millis);
+  bool pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len);
+  void sendDigestIfDue();
+  void sendMotd(ClientInfo* client);
+  bool handleExtrasCommand(char* command, char* reply);
+  void handleBotCommand(const char* args, char* reply);
+  void handleDigestCommand(const char* args, char* reply);
+  void handleMotdCommand(const char* args, char* reply);
+public:
+#endif
 
   void saveIdentity(const mesh::LocalIdentity& new_id) override;
   void clearStats() override;

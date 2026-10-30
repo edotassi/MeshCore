@@ -21,6 +21,15 @@
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
 
+#ifdef WITH_ROOM_EXTRAS
+#define POSTS_SAVE_DELAY_MILLIS      5000
+#define POSTS_SAVE_RETRY_MILLIS      30000
+#define MOTD_EXTRA_DELAY_MILLIS      1500
+#define DIGEST_CHECK_INTERVAL_MILLIS 30000
+#define ROOM_DIR                     "/room"
+#define GROUP_MAX_TEXT_LEN           160   // MAX_TEXT_LEN di MeshCore, prefisso "<nome>: " incluso
+#endif
+
 struct ServerStats {
   uint16_t batt_milli_volts;
   uint16_t curr_tx_queue_len;
@@ -63,6 +72,9 @@ void MyMesh::storePost(const mesh::Identity &author, const char *postData) {
 
   next_push = futureMillis(PUSH_NOTIFY_DELAY_MILLIS);
   _num_posted++; // stats
+#ifdef WITH_ROOM_EXTRAS
+  x_posts_save_at = futureMillis(POSTS_SAVE_DELAY_MILLIS);   // debounce: una raffica di post = una scrittura
+#endif
   MESH_DEBUG_PRINTLN("room.post: next_post_idx=%d num_posted=%d push scheduled", next_post_idx, _num_posted);
 }
 
@@ -447,6 +459,9 @@ void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const m
         }
       }
     }
+#ifdef WITH_ROOM_EXTRAS
+    sendMotd(client);
+#endif
   }
 }
 
@@ -737,6 +752,21 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _num_posted = _num_post_pushes = 0;
 
   memset(default_scope.key, 0, sizeof(default_scope.key));
+
+#ifdef WITH_ROOM_EXTRAS
+  x_ifs = NULL;
+  x_post_file = NULL;
+  x_bot = NULL;
+  x_digest = NULL;
+  x_motd = NULL;
+  x_motd_seen = NULL;
+  x_motd_seen_save_at = 0;
+  x_bot_channel_count = 0;
+  x_bot_resolved_gen = 0;
+  x_bot_resolved = false;
+  x_posts_save_at = 0;
+  x_next_digest_check = 0;
+#endif
 }
 
 void MyMesh::begin(FILESYSTEM *fs) {
@@ -815,6 +845,10 @@ void MyMesh::begin(FILESYSTEM *fs) {
 
 #if ENV_INCLUDE_GPS == 1
   applyGpsPrefs();
+#endif
+
+#ifdef WITH_ROOM_EXTRAS
+  extrasBegin();
 #endif
 }
 
@@ -1065,6 +1099,10 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       addSystemPost(msg);
       snprintf(reply, MAX_POST_TEXT_LEN, "OK");
     }
+#ifdef WITH_ROOM_EXTRAS
+  } else if (handleExtrasCommand(command, reply)) {
+    // gestito (room.bot / room.digest / room.motd)
+#endif
   } else if (memcmp(command, "set repeat on", 13) == 0) {
     strcpy(reply, "ERR - repeat now deprecated");
   } else{
@@ -1163,6 +1201,23 @@ void MyMesh::loop() {
     dirty_contacts_expiry = 0;
   }
 
+#ifdef WITH_ROOM_EXTRAS
+  // salvataggio differito dei post (debounce dall'ultimo post)
+  if (x_posts_save_at && millisHasNowPassed(x_posts_save_at)) {
+    x_posts_save_at = 0;
+    savePosts();
+  }
+  if (x_motd_seen_save_at && millisHasNowPassed(x_motd_seen_save_at)) {
+    x_motd_seen_save_at = 0;
+    if (!x_motd_seen->save()) x_motd_seen_save_at = futureMillis(POSTS_SAVE_RETRY_MILLIS);
+  }
+  // riepilogo giornaliero: controllo ogni 30 secondi
+  if (millisHasNowPassed(x_next_digest_check)) {
+    x_next_digest_check = futureMillis(DIGEST_CHECK_INTERVAL_MILLIS);
+    sendDigestIfDue();
+  }
+#endif
+
   // TODO: periodically check for OLD/inactive entries in known_clients[], and evict
 
   // update uptime
@@ -1170,3 +1225,471 @@ void MyMesh::loop() {
   uptime_millis += now - last_millis;
   last_millis = now;
 }
+
+#ifdef WITH_ROOM_EXTRAS
+/* ------------------------------------------------------------------------- *
+ * Estensioni del room server (WITH_ROOM_EXTRAS): post persistenti, test bot,
+ * riepilogo giornaliero, MOTD al login. File in /room/ (mai /bbs/).
+ * ------------------------------------------------------------------------- */
+
+void MyMesh::extrasBegin() {
+  // LittleFS richiede che la directory esista prima di creare file al suo interno.
+  _fs->mkdir(ROOM_DIR);
+
+  x_ifs = new bbs::port::LittleFsFileSystem(*_fs);
+  x_post_file = new room::PostFile(*x_ifs);
+  x_bot = new bbs::BotStore(*x_ifs, ROOM_DIR "/bot.dat");
+  x_digest = new bbs::DigestStore(*x_ifs, ROOM_DIR "/digest.dat");
+  x_motd = new bbs::MotdStore(*x_ifs, ROOM_DIR "/motd.dat");
+  x_motd_seen = new room::MotdSeen(*x_ifs);
+  x_motd_seen->load();
+
+  loadPosts();
+}
+
+void MyMesh::loadPosts() {
+  room::PostRecord* recs = new room::PostRecord[MAX_UNSYNCED_POSTS];
+  if (!recs) return;
+  size_t n = x_post_file->load(recs, MAX_UNSYNCED_POSTS);
+
+  memset(posts, 0, sizeof(posts));
+  for (size_t i = 0; i < n; i++) {
+    posts[i].author = mesh::Identity(recs[i].pub_key);
+    posts[i].post_timestamp = recs[i].timestamp;
+    StrHelper::strncpy(posts[i].text, recs[i].text, sizeof(posts[i].text));
+  }
+  next_post_idx = n % MAX_UNSYNCED_POSTS;
+  uint32_t newest = n ? recs[n - 1].timestamp : 0;
+  delete[] recs;
+
+  // L'RTC dell'ESP32 riparte da zero senza alimentazione: i nuovi post devono
+  // comunque ordinarsi dopo quelli caricati.
+  if (n > 0 && getRTCClock()->getCurrentTime() < newest) {
+    getRTCClock()->setCurrentTime(newest + 1);
+  }
+  MESH_DEBUG_PRINTLN("room: loaded %d posts", (int)n);
+}
+
+void MyMesh::savePosts() {
+  // L'anello in ordine cronologico: pieno = parte da next_post_idx (il piu'
+  // vecchio), altrimenti gli slot usati sono 0..next_post_idx-1.
+  struct RingSource : room::IPostSource {
+    const PostInfo* ring;
+    size_t start, count;
+    bool get(size_t i, room::PostRecord& out) const override {
+      const PostInfo& p = ring[(start + i) % MAX_UNSYNCED_POSTS];
+      memcpy(out.pub_key, p.author.pub_key, room::kPubKeyLen);
+      out.timestamp = p.post_timestamp;
+      StrHelper::strncpy(out.text, p.text, sizeof(out.text));
+      return true;
+    }
+  } src;
+  bool full = posts[next_post_idx].post_timestamp != 0;
+  src.ring = posts;
+  src.start = full ? next_post_idx : 0;
+  src.count = full ? MAX_UNSYNCED_POSTS : next_post_idx;
+
+  if (!x_post_file->save(src, src.count)) {
+    MESH_DEBUG_PRINTLN("room: posts save failed, retry later");
+    x_posts_save_at = futureMillis(POSTS_SAVE_RETRY_MILLIS);
+  }
+}
+
+void MyMesh::getRoomStatus(RoomStatus& out) {
+  out.now = getRTCClock()->getCurrentTime();
+  out.active_clients = 0;
+  for (int i = 0; i < acl.getNumClients(); i++) {
+    uint32_t la = acl.getClientByIdx(i)->last_activity;
+    if (la != 0 && out.now >= la && out.now - la < room::kDigestWindowSecs) out.active_clients++;
+  }
+  out.posts = 0;
+  out.last_post_ts = 0;
+  for (int i = 0; i < MAX_UNSYNCED_POSTS; i++) {
+    if (posts[i].post_timestamp == 0) continue;
+    out.posts++;
+    if (posts[i].post_timestamp > out.last_post_ts) out.last_post_ts = posts[i].post_timestamp;
+  }
+}
+
+/* ------------------------------- MOTD ------------------------------------ */
+
+void MyMesh::sendMotd(ClientInfo* client) {
+  if (!x_motd) return;
+  char text[MAX_POST_TEXT_LEN + 1];
+  x_motd->get(text, sizeof(text));
+  size_t text_len = strlen(text);
+  if (text_len == 0) return;
+
+  // Solo se il client non ha mai ricevuto questo testo, o da piu' di 24 h.
+  uint32_t motd_hash = room::motdHash(text);
+  uint32_t seen_now = getRTCClock()->getCurrentTime();
+  if (x_motd_seen && !x_motd_seen->shouldSend(client->id.pub_key, motd_hash, seen_now)) return;
+
+  // Messaggio di testo semplice dalla stanza. Non tocca lo stato di
+  // sincronizzazione dei post (pending_ack, push_post_timestamp, sync_since).
+  uint8_t temp[5 + MAX_POST_TEXT_LEN + 1];
+  uint32_t ts = getRTCClock()->getCurrentTimeUnique();
+  memcpy(temp, &ts, 4);
+  temp[4] = (TXT_TYPE_PLAIN << 2);
+  memcpy(&temp[5], text, text_len);
+
+  auto pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, temp, 5 + text_len);
+  if (!pkt) return;
+  uint32_t delay_millis = SERVER_RESPONSE_DELAY + MOTD_EXTRA_DELAY_MILLIS;
+  if (x_motd_seen) {
+    x_motd_seen->markSent(client->id.pub_key, motd_hash, seen_now);
+    x_motd_seen_save_at = futureMillis(POSTS_SAVE_DELAY_MILLIS);
+  }
+  if (client->out_path_len == OUT_PATH_UNKNOWN) {
+    sendFloodReply(pkt, delay_millis, _prefs.path_hash_mode + 1);
+  } else {
+    sendDirect(pkt, client->out_path, client->out_path_len, delay_millis);
+  }
+}
+
+/* ----------------------- Messaggi di gruppo (bot, digest) ----------------- */
+
+void MyMesh::sendGroupText(const mesh::GroupChannel& ch, const char* text, bool reply_scope, uint32_t delay_millis) {
+  // Formato come "public" in simple_secure_chat: timestamp, flags, "<nome>: <testo>".
+  uint8_t temp[5 + GROUP_MAX_TEXT_LEN + 1];
+  uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
+  memcpy(temp, &timestamp, 4);
+  temp[4] = 0;
+  int len = snprintf((char *)&temp[5], GROUP_MAX_TEXT_LEN + 1, "%s: %s", _prefs.node_name, text);
+  if (len <= 0) return;
+  if ((size_t)len > GROUP_MAX_TEXT_LEN) len = GROUP_MAX_TEXT_LEN;
+
+  auto pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, ch, temp, 5 + len);
+  if (pkt) {
+    if (reply_scope) {
+      sendFloodReply(pkt, delay_millis, _prefs.path_hash_mode + 1);
+    } else {
+      sendFloodScoped(default_scope, pkt, delay_millis, _prefs.path_hash_mode + 1);
+    }
+  } else {
+    MESH_DEBUG_PRINTLN("room group text: createGroupDatagram failed");
+  }
+}
+
+// Canale di gruppo da PSK, come BaseChatMesh::addChannel.
+static void channelFromPsk(mesh::GroupChannel& ch, const uint8_t* psk, size_t psk_len) {
+  memset(ch.secret, 0, sizeof(ch.secret));
+  memcpy(ch.secret, psk, psk_len);
+  mesh::Utils::sha256(ch.hash, sizeof(ch.hash), ch.secret, (int)psk_len);
+}
+
+void MyMesh::resolveBotChannels() {
+  if (x_bot_resolved && x_bot_resolved_gen == x_bot->generation()) return;
+  const bbs::BotSettings& s = x_bot->get();
+  x_bot_channel_count = s.count;
+  for (size_t i = 0; i < s.count; i++) {
+    const bbs::BotChannel& c = s.channels[i];
+    if (c.isHashtag()) {
+      // hashtag: primi 16 byte dello SHA-256 del nome ('#' incluso), come i client MeshCore
+      uint8_t digest[32];
+      mesh::Utils::sha256(digest, sizeof(digest), (const uint8_t*)c.name, (int)strlen(c.name));
+      channelFromPsk(x_bot_channels[i], digest, 16);
+    } else {
+      channelFromPsk(x_bot_channels[i], c.psk, c.psk_len);
+    }
+  }
+  x_bot_resolved_gen = x_bot->generation();
+  x_bot_resolved = true;
+}
+
+int MyMesh::searchChannelsByHash(const uint8_t* hash, mesh::GroupChannel channels[], int max_matches) {
+  if (!x_bot || !x_bot->get().enabled) return 0;   // bot spento: nessuna decifratura
+  resolveBotChannels();
+  int n = 0;
+  for (size_t i = 0; i < x_bot_channel_count && n < max_matches; i++) {
+    if (memcmp(x_bot_channels[i].hash, hash, sizeof(x_bot_channels[i].hash)) == 0) channels[n++] = x_bot_channels[i];
+  }
+  return n;
+}
+
+// Test bot: risponde a "test"/"!test" e "ping"/"!ping" sul canale da cui e' arrivato il messaggio.
+void MyMesh::onGroupDataRecv(mesh::Packet* packet, uint8_t type, const mesh::GroupChannel& channel, uint8_t* data, size_t len) {
+  if (!x_bot || !x_bot->get().enabled) return;
+  if (type != PAYLOAD_TYPE_GRP_TXT || len < 5) return;
+  if ((data[4] >> 2) != 0) return;           // solo testo semplice
+  if (!packet->isRouteFlood()) return;
+
+  size_t name_len = strlen(_prefs.node_name);
+  if (name_len + 2 >= GROUP_MAX_TEXT_LEN) return;
+  size_t text_cap = GROUP_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+
+  // Il testo e' "<mittente>: <corpo>" con zeri di riempimento: copia terminata.
+  char incoming[MAX_PACKET_PAYLOAD];
+  size_t text_len = len - 5;
+  if (text_len >= sizeof(incoming)) text_len = sizeof(incoming) - 1;
+  memcpy(incoming, &data[5], text_len);
+  incoming[text_len] = 0;
+
+  // Ignora i messaggi del nodo stesso ("<nome>: ...").
+  if (strncmp(incoming, _prefs.node_name, name_len) == 0 && incoming[name_len] == ':' && incoming[name_len + 1] == ' ') return;
+
+  resolveBotChannels();
+  int idx = -1;
+  for (size_t i = 0; i < x_bot_channel_count; i++) {
+    if (memcmp(x_bot_channels[i].secret, channel.secret, sizeof(channel.secret)) == 0) { idx = (int)i; break; }
+  }
+  if (idx < 0) return;
+
+  char sender[40];
+  bbs::BotCommand cmd = bbs::parseBotCommand(incoming, sender, sizeof(sender));
+  if (cmd != bbs::BotCommand::TEST && cmd != bbs::BotCommand::PING) return;   // "!news" non esiste sul room server
+  // Il cooldown (condiviso tra "test" e "ping") si consuma solo se la risposta parte davvero.
+  if (!x_bot_cooldown.allow((size_t)idx, (uint32_t)millis())) return;
+
+  char reply[GROUP_MAX_TEXT_LEN + 1];
+  size_t reply_len = bbs::formatHopReply(sender, packet->getPathHashCount(), packet->path, packet->getPathHashSize(),
+                                         reply, text_cap, cmd == bbs::BotCommand::PING);
+  if (reply_len == 0) return;
+
+  // Ritardo casuale, cosi' la risposta non collide con le ritrasmissioni del flood.
+  sendGroupText(channel, reply, true, getRNG()->nextInt(1000, 3000));
+}
+
+/* ------------------------------ Digest ------------------------------------ */
+
+bool MyMesh::pollDigest(char* text, size_t text_cap, uint8_t psk[32], size_t& psk_len) {
+  if (text_cap == 0) return false;
+
+  // ring -> array per la funzione pura
+  uint32_t ts[MAX_UNSYNCED_POSTS];
+  uint8_t prefixes[MAX_UNSYNCED_POSTS * room::kAuthorPrefixLen];
+  for (int i = 0; i < MAX_UNSYNCED_POSTS; i++) {
+    ts[i] = posts[i].post_timestamp;
+    memcpy(&prefixes[i * room::kAuthorPrefixLen], posts[i].author.pub_key, room::kAuthorPrefixLen);
+  }
+
+  uint32_t now = getRTCClock()->getCurrentTime();
+  bool send = false;
+  if (x_digest->takeNowRequest()) {
+    // Richiesta manuale: parte comunque, anche se disattivato o senza post, e non tocca last_sent_day.
+    if (room::formatDigest(ts, prefixes, MAX_UNSYNCED_POSTS, self_id.pub_key, now, text, text_cap) == 0) {
+      StrHelper::strncpy(text, room::kDigestNoPosts, text_cap);
+    }
+    send = true;
+  } else {
+    bbs::DigestDecision d = bbs::decide(x_digest->get(), now);
+    if (d == bbs::DigestDecision::WAIT) return false;
+
+    // Segna il giorno come fatto PRIMA di inviare: se la scrittura fallisce
+    // non si invia, altrimenti si rimanderebbe ogni 30 secondi.
+    bbs::DigestSettings s = x_digest->get();
+    s.last_sent_day = bbs::localDayNumber(bbs::localTime(now, s));
+    if (!x_digest->save(s)) return false;
+
+    if (d == bbs::DigestDecision::SEND &&
+        room::formatDigest(ts, prefixes, MAX_UNSYNCED_POSTS, self_id.pub_key, now, text, text_cap) > 0) {
+      send = true;
+    }
+  }
+  if (!send) return false;
+
+  const bbs::DigestSettings& s = x_digest->get();
+  memset(psk, 0, 32);
+  memcpy(psk, s.psk, s.psk_len);
+  psk_len = s.psk_len;
+  return true;
+}
+
+void MyMesh::sendDigestIfDue() {
+  if (!x_digest) return;
+  size_t name_len = strlen(_prefs.node_name);
+  if (name_len + 2 >= GROUP_MAX_TEXT_LEN) return;  // nome assurdamente lungo: niente spazio per il testo
+  size_t text_cap = GROUP_MAX_TEXT_LEN - name_len - 2 + 1;  // +1 per il terminatore
+
+  char text[GROUP_MAX_TEXT_LEN + 1];
+  uint8_t psk[32];
+  size_t psk_len = 0;
+  if (!pollDigest(text, text_cap, psk, psk_len)) return;
+
+  mesh::GroupChannel ch;
+  channelFromPsk(ch, psk, psk_len);
+  sendGroupText(ch, text, false, 0);
+}
+
+/* ------------------------------- CLI -------------------------------------- */
+
+// Estrae il prossimo token (separato da spazi) in 'out'; avanza 'p'.
+static void nextToken(const char*& p, char* out, size_t cap) {
+  while (*p == ' ') p++;
+  size_t n = 0;
+  while (*p && *p != ' ') {
+    if (n + 1 < cap) out[n++] = *p;
+    p++;
+  }
+  out[n] = 0;
+  while (*p == ' ') p++;
+}
+
+bool MyMesh::handleExtrasCommand(char* command, char* reply) {
+  if (strncmp(command, "room.bot", 8) == 0 && (command[8] == 0 || command[8] == ' ')) {
+    handleBotCommand(command + 8, reply);
+  } else if (strncmp(command, "room.digest", 11) == 0 && (command[11] == 0 || command[11] == ' ')) {
+    handleDigestCommand(command + 11, reply);
+  } else if (strncmp(command, "room.motd", 9) == 0 && (command[9] == 0 || command[9] == ' ')) {
+    handleMotdCommand(command + 9, reply);
+  } else {
+    return false;
+  }
+  return true;
+}
+
+void MyMesh::handleBotCommand(const char* args, char* reply) {
+  if (!x_bot) { strcpy(reply, "ERR bot unavailable"); return; }
+  const char* p = args;
+  char sub[8];
+  nextToken(p, sub, sizeof(sub));
+  bbs::BotSettings s = x_bot->get();   // persisti-poi-applica: si modifica la copia
+
+  if (sub[0] == 0) {
+    char list[bbs::kBotMaxChannels * (bbs::kBotNameLen + 2) + 1];
+    size_t ll = 0;
+    list[0] = 0;
+    for (size_t i = 0; i < s.count; i++) {
+      int n = snprintf(list + ll, sizeof(list) - ll, "%s%s", i ? ", " : "", s.channels[i].name);
+      if (n > 0 && ll + (size_t)n < sizeof(list)) ll += (size_t)n;
+    }
+    snprintf(reply, 150, "Bot %s. Channels: %s", s.enabled ? "on" : "off", s.count ? list : "none");
+    return;
+  }
+
+  char msg[64];
+  if (strcasecmp(sub, "on") == 0 || strcasecmp(sub, "off") == 0) {
+    s.enabled = (strcasecmp(sub, "on") == 0);
+    snprintf(msg, sizeof(msg), "OK - bot %s", s.enabled ? "on" : "off");
+  } else if (strcasecmp(sub, "add") == 0) {
+    char name[48], psk_tok[72];
+    nextToken(p, name, sizeof(name));
+    nextToken(p, psk_tok, sizeof(psk_tok));
+    if (name[0] == 0) { strcpy(reply, "ERR usage: room.bot add #name | public | <name> <psk>"); return; }
+
+    bbs::BotChannel c;
+    if (name[0] == '#') {
+      if (!bbs::normalizeHashtagName(name, c.name, sizeof(c.name))) { strcpy(reply, "ERR bad hashtag name"); return; }
+      c.psk_len = 0;
+    } else if (psk_tok[0] == 0) {
+      if (strcasecmp(name, "public") != 0) { strcpy(reply, "ERR usage: room.bot add #name | public | <name> <psk>"); return; }
+      c = bbs::BotSettings().channels[0];
+    } else {
+      if (!bbs::isValidKeyedName(name)) { strcpy(reply, "ERR bad channel name"); return; }
+      uint8_t psk[bbs::kBotPskMaxLen];
+      size_t n = bbs::decodeKey(psk_tok, psk, sizeof(psk));
+      if (n != 16 && n != 32) { strcpy(reply, "ERR bad key (hex/base64, 16 or 32 bytes)"); return; }
+      strcpy(c.name, name);
+      memcpy(c.psk, psk, n);
+      c.psk_len = (uint8_t)n;
+    }
+    if (s.find(c.name) >= 0) { strcpy(reply, "ERR channel already present"); return; }
+    if (s.count >= bbs::kBotMaxChannels) { strcpy(reply, "ERR max 4 channels"); return; }
+    s.channels[s.count++] = c;
+    snprintf(msg, sizeof(msg), "OK - added %s", c.name);
+  } else if (strcasecmp(sub, "del") == 0) {
+    char name[48];
+    nextToken(p, name, sizeof(name));
+    int idx = s.find(name);
+    if (idx < 0) { strcpy(reply, "ERR channel not found"); return; }
+    snprintf(msg, sizeof(msg), "OK - removed %s", s.channels[idx].name);
+    for (size_t i = (size_t)idx; i + 1 < s.count; i++) s.channels[i] = s.channels[i + 1];
+    s.count--;
+    s.channels[s.count] = bbs::BotChannel();
+  } else {
+    strcpy(reply, "ERR usage: room.bot [on|off|add|del]");
+    return;
+  }
+
+  if (!x_bot->save(s)) { strcpy(reply, "ERR save failed"); return; }
+  strcpy(reply, msg);
+}
+
+void MyMesh::handleDigestCommand(const char* args, char* reply) {
+  if (!x_digest) { strcpy(reply, "ERR digest unavailable"); return; }
+  const char* p = args;
+  char sub[8];
+  nextToken(p, sub, sizeof(sub));
+  bbs::DigestSettings s = x_digest->get();   // persisti-poi-applica
+
+  if (sub[0] == 0) {
+    int tz = s.tz_offset_min;
+    unsigned tz_abs = (unsigned)(tz < 0 ? -tz : tz);
+    snprintf(reply, 150, "Digest %s at %02u:%02u UTC%c%u:%02u DST %s, channel %s", s.enabled ? "on" : "off",
+             (unsigned)s.hour, (unsigned)s.minute, tz < 0 ? '-' : '+', tz_abs / 60, tz_abs % 60,
+             s.eu_dst ? "EU" : "off", s.usesPublicPsk() ? "public" : "private");
+    return;
+  }
+  if (strcasecmp(sub, "now") == 0) {
+    x_digest->requestNow();
+    strcpy(reply, "OK - digest queued");
+    return;
+  }
+
+  char msg[64];
+  char tok[72];
+  if (strcasecmp(sub, "on") == 0 || strcasecmp(sub, "off") == 0) {
+    s.enabled = (strcasecmp(sub, "on") == 0);
+    snprintf(msg, sizeof(msg), "OK - digest %s", s.enabled ? "on" : "off");
+  } else if (strcasecmp(sub, "time") == 0) {
+    nextToken(p, tok, sizeof(tok));
+    if (!room::parseHourMinute(tok, s.hour, s.minute)) { strcpy(reply, "ERR time must be HH:MM"); return; }
+    snprintf(msg, sizeof(msg), "OK - digest at %02u:%02u", (unsigned)s.hour, (unsigned)s.minute);
+  } else if (strcasecmp(sub, "tz") == 0) {
+    nextToken(p, tok, sizeof(tok));
+    if (!room::parseTzOffset(tok, s.tz_offset_min)) { strcpy(reply, "ERR tz must be +/-H[:MM], -12:00..+14:00"); return; }
+    int tz = s.tz_offset_min;
+    unsigned tz_abs = (unsigned)(tz < 0 ? -tz : tz);
+    snprintf(msg, sizeof(msg), "OK - tz UTC%c%u:%02u", tz < 0 ? '-' : '+', tz_abs / 60, tz_abs % 60);
+  } else if (strcasecmp(sub, "dst") == 0) {
+    nextToken(p, tok, sizeof(tok));
+    if (strcasecmp(tok, "on") == 0) s.eu_dst = true;
+    else if (strcasecmp(tok, "off") == 0) s.eu_dst = false;
+    else { strcpy(reply, "ERR usage: room.digest dst on|off"); return; }
+    snprintf(msg, sizeof(msg), "OK - EU DST %s", s.eu_dst ? "on" : "off");
+  } else if (strcasecmp(sub, "channel") == 0) {
+    nextToken(p, tok, sizeof(tok));
+    if (tok[0] == 0) { strcpy(reply, "ERR usage: room.digest channel public|<psk>"); return; }
+    if (strcasecmp(tok, "public") == 0) {
+      s.setPublicPsk();
+      strcpy(msg, "OK - channel public");
+    } else {
+      uint8_t psk[bbs::kDigestPskMaxLen];
+      size_t n = bbs::decodeKey(tok, psk, sizeof(psk));
+      if (n != 16 && n != 32) { strcpy(reply, "ERR bad key (hex/base64, 16 or 32 bytes)"); return; }
+      memset(s.psk, 0, sizeof(s.psk));
+      memcpy(s.psk, psk, n);
+      s.psk_len = (uint8_t)n;
+      strcpy(msg, "OK - channel private");
+    }
+  } else {
+    strcpy(reply, "ERR usage: room.digest [on|off|time|tz|dst|channel|now]");
+    return;
+  }
+
+  if (!x_digest->save(s)) { strcpy(reply, "ERR save failed"); return; }
+  strcpy(reply, msg);
+}
+
+void MyMesh::handleMotdCommand(const char* args, char* reply) {
+  if (!x_motd) { strcpy(reply, "ERR motd unavailable"); return; }
+  const char* p = args;
+  char sub[8];
+  nextToken(p, sub, sizeof(sub));   // p resta sul resto della riga, con gli spazi interni intatti
+
+  if (sub[0] == 0) {
+    char text[MAX_POST_TEXT_LEN + 1];
+    x_motd->get(text, sizeof(text));
+    if (text[0] == 0) strcpy(reply, "MOTD not set");
+    else snprintf(reply, 150, "MOTD: %s", text);
+  } else if (strcasecmp(sub, "clear") == 0) {
+    strcpy(reply, x_motd->set("") ? "OK - MOTD cleared" : "ERR save failed");
+  } else if (strcasecmp(sub, "set") == 0) {
+    if (*p == 0) { strcpy(reply, "ERR usage: room.motd set <text>"); return; }
+    if (strlen(p) > MAX_POST_TEXT_LEN) { strcpy(reply, "ERR text too long (max 151)"); return; }
+    strcpy(reply, x_motd->set(p) ? "OK - MOTD set" : "ERR save failed");
+  } else {
+    strcpy(reply, "ERR usage: room.motd [set <text>|clear]");
+  }
+}
+#endif // WITH_ROOM_EXTRAS

@@ -2,6 +2,11 @@
 #include <Arduino.h>
 #include <helpers/CommonCLI.h>
 
+#ifdef WITH_ROOM_EXTRAS
+#include "MyMesh.h"
+extern MyMesh the_mesh;   // definito in main.cpp
+#endif
+
 #if defined(WITH_MQTT_BRIDGE) || defined(WITH_MQTT_WORMHOLE_BRIDGE)
 #include <WiFi.h>
 #endif
@@ -124,10 +129,20 @@ void UITask::renderCurrScreen() {
     }
     _display->print(tmp);
 
+#ifdef WITH_ROOM_EXTRAS
+    bool show_room_page = false;
+#endif
 #if defined(WITH_MQTT_BRIDGE) && defined(WITH_MQTT_WORMHOLE_BRIDGE)
     // both present: alternate rows 40/50 between MQTT observer status and wormhole
     // status every 5s, so both fit on the small screen without a page-switch button
+#ifdef WITH_ROOM_EXTRAS
+    // third page: room status (clients / posts / last post age)
+    unsigned long page = (millis() / 5000) % 3;
+    bool show_wormhole_page = _callbacks != nullptr && page == 1;
+    show_room_page = page == 2;
+#else
     bool show_wormhole_page = _callbacks != nullptr && (millis() / 5000) % 2 == 1;
+#endif
 #elif defined(WITH_MQTT_WORMHOLE_BRIDGE)
     // wormhole only, no observer: always show it, nothing to alternate with
     bool show_wormhole_page = _callbacks != nullptr;
@@ -135,6 +150,30 @@ void UITask::renderCurrScreen() {
     bool show_wormhole_page = false;
 #endif
 
+#ifdef WITH_ROOM_EXTRAS
+    if (show_room_page) {
+      MyMesh::RoomStatus rs;
+      the_mesh.getRoomStatus(rs);
+      _display->setCursor(0, 40);
+      sprintf(tmp, "Room: %u cl %u post", (unsigned)rs.active_clients, (unsigned)rs.posts);
+      _display->print(tmp);
+
+      _display->setCursor(0, 50);
+      if (rs.last_post_ts == 0) {
+        sprintf(tmp, "Ultimo post: -");
+      } else {
+        uint32_t age = rs.now > rs.last_post_ts ? rs.now - rs.last_post_ts : 0;
+        if (age < 3600) {
+          sprintf(tmp, "Ultimo post: %lum", (unsigned long)(age / 60));
+        } else if (age < 86400) {
+          sprintf(tmp, "Ultimo post: %luh", (unsigned long)(age / 3600));
+        } else {
+          sprintf(tmp, "Ultimo post: %lug", (unsigned long)(age / 86400));
+        }
+      }
+      _display->print(tmp);
+    } else
+#endif
     if (show_wormhole_page) {
       // wormhole link status
       _display->setCursor(0, 40);
