@@ -170,6 +170,7 @@ This is behind the `WITH_MQTT_WORMHOLE_BRIDGE` build flag — it can be combined
 
 PlatformIO envs with this flag:
 - `heltec_v4_repeater_mqtt` / `heltec_v4_room_server_mqtt` — observer + wormhole, Heltec V4 (has PSRAM)
+- `heltec_v4_room_server_mqtt_lfs` — same room server, but with the BBS data layout (LittleFS + `variants/heltec_v4_bbs/partitions_bbs.csv`, `MAX_CLIENTS=500`): you can switch between it and `heltec_v4_bbs_room_server(_mqtt)` with a normal upload and keep identity, prefs and ACL. The BBS data in `/bbs/` is left untouched and comes back when you flash the BBS again. Switching from the plain `heltec_v4_room_server_mqtt` still reformats the data partition. `erase` on this env wipes the BBS data too. It also ships with the MeshCore Italia observer preset (`osservatori.meshcoreitalia.it`, see [docs/wormhole_and_observer_setup.md](./docs/wormhole_and_observer_setup.md)): at boot, if `mqtt.server` is empty, it fills in the observer settings and turns the bridge on (`bridge.source rx`). You still need `set wifi.ssid` / `set wifi.pwd`
 - `Heltec_v3_repeater_mqtt` — observer + wormhole, Heltec V3
 - `Heltec_v3_repeater_mqtt_noota` — same, without the WiFi OTA web server (see RAM note below)
 - `Heltec_v3_repeater_wormhole_noota` — **wormhole only, no observer**, without OTA — for a node that's only ever the wormhole's local end, not also reporting to the public MQTT observer

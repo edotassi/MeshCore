@@ -7,6 +7,10 @@
   #include <InternalFileSystem.h>
 #elif defined(RP2040_PLATFORM)
   #include <LittleFS.h>
+#elif defined(ESP32) && defined(ROOM_USE_LITTLEFS)
+  // Stesso filesystem e partition table della BBS: si passa da un firmware
+  // all'altro senza perdere identita', prefs e ACL.
+  #include <LittleFS.h>
 #elif defined(ESP32)
   #include <SPIFFS.h>
 #endif

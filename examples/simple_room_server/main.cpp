@@ -59,6 +59,10 @@ void setup() {
   fs = &LittleFS;
   IdentityStore store(LittleFS, "/identity");
   store.begin();
+#elif defined(ESP32) && defined(ROOM_USE_LITTLEFS)
+  LittleFS.begin(true);
+  fs = &LittleFS;
+  IdentityStore store(LittleFS, "/identity");
 #elif defined(ESP32)
   SPIFFS.begin(true);
   fs = &SPIFFS;

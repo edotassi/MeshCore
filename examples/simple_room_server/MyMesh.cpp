@@ -774,6 +774,26 @@ void MyMesh::begin(FILESYSTEM *fs) {
 
   board.attachDynamicPrefs(_prefs.getCustom());
 
+#if defined(WITH_MQTT_BRIDGE) && defined(MQTT_DEFAULT_SERVER)
+  // Observer preconfigurato da build flag. Applicato dopo loadPrefs() e solo se
+  // mqtt.server e' vuoto: la sezione mqtt di prefs.json viene sempre salvata
+  // (anche dalla BBS, vuota), quindi un default nel costruttore verrebbe
+  // sovrascritto. Una configurazione fatta a mano via CLI non viene toccata.
+  if (_prefs.mqtt_server[0] == 0) {
+    StrHelper::strncpy(_prefs.mqtt_server, MQTT_DEFAULT_SERVER, sizeof(_prefs.mqtt_server));
+    _prefs.mqtt_port = MQTT_DEFAULT_PORT;
+    StrHelper::strncpy(_prefs.mqtt_username, MQTT_DEFAULT_USERNAME, sizeof(_prefs.mqtt_username));
+    StrHelper::strncpy(_prefs.mqtt_password, MQTT_DEFAULT_PASSWORD, sizeof(_prefs.mqtt_password));
+    StrHelper::strncpy(_prefs.mqtt_origin, MQTT_DEFAULT_ORIGIN, sizeof(_prefs.mqtt_origin));
+    StrHelper::strncpy(_prefs.mqtt_iata, MQTT_DEFAULT_IATA, sizeof(_prefs.mqtt_iata));
+    _prefs.mqtt_status_enabled = 1;
+    _prefs.mqtt_tx_enabled = 1;
+    _prefs.bridge_pkt_src = 1;   // rx
+    _prefs.bridge_enabled = 1;
+    _cli.savePrefs(_fs);
+  }
+#endif
+
 #if defined(WITH_BRIDGE)
   if (_prefs.bridge_enabled) {
 #if defined(WITH_MQTT_BRIDGE)
@@ -844,6 +864,8 @@ bool MyMesh::formatFileSystem() {
 #if defined(NRF52_PLATFORM)
   return InternalFS.format();
 #elif defined(RP2040_PLATFORM)
+  return LittleFS.format();
+#elif defined(ESP32) && defined(ROOM_USE_LITTLEFS)
   return LittleFS.format();
 #elif defined(ESP32)
   return SPIFFS.format();
